@@ -45,7 +45,11 @@ struct TreemapView: View {
     let focused: Node?
     @Binding var hovered: Node?
     /// nil means the click landed on empty space.
+    var canDelete: Bool
     var onClick: (Placed?) -> Void
+    var onMenu: (MenuAction, Placed) -> Void
+
+    enum MenuAction { case detail, simple, zoom, delete, reveal }
     @State private var placed: [Placed] = []
 
     static let padding: CGFloat = 3
@@ -68,8 +72,16 @@ struct TreemapView: View {
                 onClick(placed.first { $0.node === target })
             }
             .contextMenu {
-                if let hovered {
-                    Button("Finderで表示") { NSWorkspace.shared.activateFileViewerSelecting([hovered.url]) }
+                if let item = hovered.flatMap({ node in placed.first { $0.node === node } }) {
+                    if item.node.isDirectory {
+                        Button("詳細表示") { onMenu(.detail, item) }
+                        Button("簡易表示") { onMenu(.simple, item) }
+                        Button("注目表示") { onMenu(.zoom, item) }
+                        Divider()
+                    }
+                    Button("Finderで表示") { onMenu(.reveal, item) }
+                    Divider()
+                    Button("削除…", role: .destructive) { onMenu(.delete, item) }.disabled(!canDelete)
                 }
             }
             .onChange(of: geometry.size, initial: true) { relayout(geometry.size) }

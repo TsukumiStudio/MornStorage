@@ -115,6 +115,52 @@ final class StorageModel: ObservableObject {
         }
     }
 
+    func menu(_ action: TreemapView.MenuAction, _ item: Placed) {
+        switch action {
+        case .detail:
+            focused = item
+            depth.shift(1, focused: item)
+        case .simple:
+            focused = item
+            depth.shift(-1, focused: item)
+        case .zoom:
+            current = item.node
+            focused = nil
+        case .reveal:
+            NSWorkspace.shared.activateFileViewerSelecting([item.node.url])
+        case .delete:
+            trash(item.node)
+        }
+    }
+
+    /// Moves to the Trash (recoverable) after confirmation, then drops the node from the tree.
+    private func trash(_ node: Node) {
+        guard !isScanning, let parent = node.parent else { return }
+        let alert = NSAlert()
+        alert.messageText = "「\(node.name)」をゴミ箱に入れますか?"
+        alert.informativeText = "\(node.path)\n\(Self.format(node.size))"
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "ゴミ箱に入れる")
+        alert.addButton(withTitle: "キャンセル")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        do {
+            try FileManager.default.trashItem(at: node.url, resultingItemURL: nil)
+        } catch {
+            let failure = NSAlert(error: error)
+            failure.runModal()
+            return
+        }
+        lock.withLock {
+            parent.children.removeAll { $0 === node }
+            var ancestor: Node? = parent
+            while let current = ancestor { current.size -= node.size; ancestor = current.parent }
+        }
+        if current.map({ $0.ancestors.contains { $0 === node } }) == true { current = parent }
+        if focused?.node.ancestors.contains(where: { $0 === node }) == true { focused = nil }
+        hovered = nil
+        revision += 1
+    }
+
     func cancel() {
         scanner?.cancel()
         task?.cancel()
@@ -154,9 +200,11 @@ struct ContentView: View {
             .onTapGesture { model.focused = nil }
             Group {
                 if let current = model.current {
-                    TreemapView(root: current, lock: model.lock, revision: model.revision, state: model.depth, focused: model.focused?.node, hovered: $model.hovered) { placed in
+                    TreemapView(root: current, lock: model.lock, revision: model.revision, state: model.depth, focused: model.focused?.node, hovered: $model.hovered, canDelete: !model.isScanning) { placed in
                         model.focused = placed
                         if let placed { model.depth.toggle(placed) }
+                    } onMenu: { action, item in
+                        model.menu(action, item)
                     }
                 } else {
                     Text("ボリュームを選択してスキャンを開始します")

@@ -34,7 +34,7 @@ final class StorageModel: ObservableObject {
     /// Used bytes of the scanned volume; nil when the target is not a volume root.
     @Published private(set) var expectedBytes: Int64?
     @Published var hovered: Node?
-    @Published var depth = DepthState(maxDepth: UserDefaults.standard.object(forKey: "maxDepth") as? Int ?? 8)
+    @Published var depth = DepthState(maxDepth: UserDefaults.standard.object(forKey: "maxDepth") as? Int ?? 3)
     @Published var focused: Placed?
     /// Bumped while scanning so the treemap re-lays out the growing tree.
     @Published private(set) var revision = 0

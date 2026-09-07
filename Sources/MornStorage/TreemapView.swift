@@ -12,7 +12,7 @@ struct Placed {
 
 /// Per-folder view state changed by clicks and the depth buttons.
 struct DepthState: Equatable {
-    var maxDepth = 8
+    var maxDepth = 3
     var closed: Set<ObjectIdentifier> = []
     var extra: [ObjectIdentifier: Int] = [:]
 

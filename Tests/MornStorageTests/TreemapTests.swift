@@ -31,7 +31,7 @@ final class TreemapTests: XCTestCase {
         big.size = 1000
         let tiny = Node(url: dir.url.appendingPathComponent("tiny"), isDirectory: false, parent: dir)
         tiny.size = 1
-        dir.children = [big, tiny]; dir.size = 1001
+        dir.children = [tiny, big]; dir.size = 1001
         root.children = [dir]; root.size = 1001
         var placed: [Placed] = []
         TreemapView.place(root, in: CGRect(x: 0, y: 0, width: 200, height: 200), depth: 0, into: &placed)

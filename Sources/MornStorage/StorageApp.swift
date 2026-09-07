@@ -244,15 +244,16 @@ struct ContentView: View {
     private var depthControls: some View {
         HStack(spacing: Spacing.gap / 2) {
             Button { shift(-1) } label: { Image(systemName: "minus.square") }
-                .disabled(model.focused == nil && model.depth.maxDepth <= 1)
+                .disabled(model.depth.maxDepth <= 1)
                 .help("表示する階層を浅くする").accessibilityLabel("表示する階層を浅くする")
             Button { shift(1) } label: { Image(systemName: "plus.square") }
                 .help("表示する階層を深くする").accessibilityLabel("表示する階層を深くする")
         }
     }
 
+    /// Toolbar buttons always act on the whole view; per-folder depth lives in the context menu.
     private func shift(_ delta: Int) {
-        model.depth.shift(delta, focused: model.focused)
+        model.depth.shift(delta, focused: nil)
         UserDefaults.standard.set(model.depth.maxDepth, forKey: "maxDepth")
     }
 

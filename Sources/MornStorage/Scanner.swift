@@ -30,14 +30,16 @@ struct ScanProgress {
     var errors = 0
 }
 
-/// Grows `root` in place on the calling thread. Every tree mutation happens under `lock`,
+/// Grows `root` in place. Directories are walked in parallel with getattrlistbulk (one syscall per
+/// buffer of entries instead of one stat per file). Every tree mutation happens under `lock`,
 /// so readers that hold `lock` can lay out the partial tree while the scan continues.
 final class Scanner: @unchecked Sendable {
     let root: Node
     let lock: NSLock
     private var progress = ScanProgress()
     private var cancelled = false
-    private static let keys: Set<URLResourceKey> = [.isDirectoryKey, .isSymbolicLinkKey, .isVolumeKey, .totalFileAllocatedSizeKey, .fileAllocatedSizeKey]
+    private let queue = DispatchQueue(label: "studio.tsukumi.MornStorage.scan", qos: .userInitiated, attributes: .concurrent)
+    private let group = DispatchGroup()
 
     init(url: URL, lock: NSLock) {
         root = Node(url: url, isDirectory: true, parent: nil)
@@ -48,31 +50,65 @@ final class Scanner: @unchecked Sendable {
     func cancel() { lock.withLock { cancelled = true } }
     private var isCancelled: Bool { lock.withLock { cancelled } }
 
-    func run() { walk(root) }
+    func run() {
+        walk(root)
+        group.wait()
+    }
 
     private func walk(_ directory: Node) {
-        let entries: [URL]
-        do {
-            entries = try FileManager.default.contentsOfDirectory(at: directory.url, includingPropertiesForKeys: Array(Self.keys), options: [])
-        } catch {
-            lock.withLock { progress.errors += 1 }
-            return
-        }
+        if isCancelled { return }
+        let fd = open(directory.url.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW)
+        guard fd >= 0 else { lock.withLock { progress.errors += 1 }; return }
+        defer { close(fd) }
         var files: [Node] = [], directories: [Node] = []
-        var bytes: Int64 = 0, errors = 0
-        for entry in entries {
-            if isCancelled { return }
-            guard let values = try? entry.resourceValues(forKeys: Self.keys) else { errors += 1; continue }
-            // Another volume's mount point (e.g. /Volumes/X, /System/Volumes/Data) belongs to that volume's scan.
-            if values.isVolume == true { continue }
-            // Symlinks count as tiny files so a link never doubles or loops its target.
-            if values.isDirectory == true, values.isSymbolicLink != true {
-                directories.append(Node(url: entry, isDirectory: true, parent: directory))
-            } else {
-                let child = Node(url: entry, isDirectory: false, parent: directory)
-                child.size = Int64(values.totalFileAllocatedSize ?? values.fileAllocatedSize ?? 0)
-                files.append(child)
-                bytes += child.size
+        var bytes: Int64 = 0
+        var request = attrlist(bitmapcount: u_short(ATTR_BIT_MAP_COUNT), reserved: 0,
+                               commonattr: attrgroup_t(ATTR_CMN_RETURNED_ATTRS) | attrgroup_t(ATTR_CMN_NAME) | attrgroup_t(ATTR_CMN_OBJTYPE),
+                               volattr: 0, dirattr: attrgroup_t(ATTR_DIR_MOUNTSTATUS), fileattr: attrgroup_t(ATTR_FILE_ALLOCSIZE), forkattr: 0)
+        let buffer = UnsafeMutableRawPointer.allocate(byteCount: 256 * 1024, alignment: 8)
+        defer { buffer.deallocate() }
+        while true {
+            let count = getattrlistbulk(fd, &request, buffer, 256 * 1024, 0)
+            if count < 0 { lock.withLock { progress.errors += 1 }; break }
+            if count == 0 { break }
+            var entry = buffer
+            for _ in 0..<count {
+                let length = Int(entry.loadUnaligned(as: UInt32.self))
+                var field = entry + 4
+                let returned = field.loadUnaligned(as: attribute_set_t.self)
+                field += MemoryLayout<attribute_set_t>.size
+                var name = ""
+                if returned.commonattr & attrgroup_t(ATTR_CMN_NAME) != 0 {
+                    let reference = field.loadUnaligned(as: attrreference_t.self)
+                    name = String(cString: (field + Int(reference.attr_dataoffset)).assumingMemoryBound(to: CChar.self))
+                    field += MemoryLayout<attrreference_t>.size
+                }
+                var type: fsobj_type_t = 0
+                if returned.commonattr & attrgroup_t(ATTR_CMN_OBJTYPE) != 0 {
+                    type = field.loadUnaligned(as: fsobj_type_t.self)
+                    field += MemoryLayout<fsobj_type_t>.size
+                }
+                var mountStatus: UInt32 = 0
+                if returned.dirattr & attrgroup_t(ATTR_DIR_MOUNTSTATUS) != 0 {
+                    mountStatus = field.loadUnaligned(as: UInt32.self)
+                    field += MemoryLayout<UInt32>.size
+                }
+                var allocated: Int64 = 0
+                if returned.fileattr & attrgroup_t(ATTR_FILE_ALLOCSIZE) != 0 {
+                    allocated = field.loadUnaligned(as: off_t.self)
+                }
+                entry += length
+                if type == UInt32(VDIR.rawValue) {
+                    // Another volume's mount point (e.g. /Volumes/X, /System/Volumes/Data) belongs to that volume's scan.
+                    if mountStatus & UInt32(DIR_MNTSTATUS_MNTPOINT) != 0 { continue }
+                    directories.append(Node(url: directory.url.appendingPathComponent(name, isDirectory: true), isDirectory: true, parent: directory))
+                } else {
+                    // Symlinks and everything else count as files, so a link never doubles or loops its target.
+                    let child = Node(url: directory.url.appendingPathComponent(name, isDirectory: false), isDirectory: false, parent: directory)
+                    child.size = allocated
+                    files.append(child)
+                    bytes += allocated
+                }
             }
         }
         lock.withLock {
@@ -82,8 +118,10 @@ final class Scanner: @unchecked Sendable {
             while let current = node { current.size += bytes; node = current.parent }
             progress.files += files.count
             progress.bytes += bytes
-            progress.errors += errors
         }
-        for child in directories { walk(child) }
+        for child in directories {
+            group.enter()
+            queue.async { self.walk(child); self.group.leave() }
+        }
     }
 }

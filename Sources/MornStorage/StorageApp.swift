@@ -133,8 +133,8 @@ struct ContentView: View {
             .overlay(alignment: .center) {
                 if model.isScanning, model.root?.size == 0 { Text("スキャン中…").foregroundStyle(.secondary) }
             }
-            .background(Color(nsColor: .windowBackgroundColor))
-            .clipShape(RoundedRectangle(cornerRadius: 4))
+            .background(Color(white: 0.09))
+            .clipShape(RoundedRectangle(cornerRadius: 8))
             HStack(spacing: Spacing.gap) {
                 Text(statusText).font(.callout).lineLimit(1).truncationMode(.middle)
                 Spacer()

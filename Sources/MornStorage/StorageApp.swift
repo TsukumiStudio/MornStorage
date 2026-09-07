@@ -34,7 +34,7 @@ final class StorageModel: ObservableObject {
     /// Used bytes of the scanned volume; nil when the target is not a volume root.
     @Published private(set) var expectedBytes: Int64?
     @Published var hovered: Node?
-    @Published var extraDepth: [ObjectIdentifier: Int] = [:]
+    @Published var toggles: [ObjectIdentifier: Bool] = [:]
     /// Bumped while scanning so the treemap re-lays out the growing tree.
     @Published private(set) var revision = 0
     let lock = NSLock()
@@ -71,7 +71,7 @@ final class StorageModel: ObservableObject {
         root = scanner.root
         current = scanner.root
         hovered = nil
-        extraDepth = [:]
+        toggles = [:]
         progress = ScanProgress()
         let values = try? url.resourceValues(forKeys: [.isVolumeKey, .volumeTotalCapacityKey, .volumeAvailableCapacityKey])
         expectedBytes = values?.isVolume == true ? Int64((values?.volumeTotalCapacity ?? 0) - (values?.volumeAvailableCapacity ?? 0)) : nil
@@ -129,8 +129,8 @@ struct ContentView: View {
             .frame(height: Spacing.section * 2)
             Group {
                 if let current = model.current {
-                    TreemapView(root: current, lock: model.lock, revision: model.revision, maxDepth: maxDepth, extraDepth: model.extraDepth, hovered: $model.hovered) {
-                        model.extraDepth[ObjectIdentifier($0), default: 0] += 1
+                    TreemapView(root: current, lock: model.lock, revision: model.revision, maxDepth: maxDepth, toggles: model.toggles, hovered: $model.hovered) { node, open in
+                        model.toggles[ObjectIdentifier(node)] = open
                     }
                 } else {
                     Text("ボリュームを選択してスキャンを開始します")

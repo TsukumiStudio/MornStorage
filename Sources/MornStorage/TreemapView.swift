@@ -4,6 +4,8 @@ struct Placed {
     let node: Node
     let rect: CGRect
     let depth: Int
+    /// Directory whose children are laid out; clicking it collapses instead of expanding.
+    let open: Bool
 }
 
 struct TreemapView: View {
@@ -11,10 +13,10 @@ struct TreemapView: View {
     let lock: NSLock
     let revision: Int
     let maxDepth: Int
-    /// Extra levels revealed under a folder by clicking it, keyed by node identity.
-    let extraDepth: [ObjectIdentifier: Int]
+    /// Per-folder override from clicks: true forces one level open, false collapses the subtree.
+    let toggles: [ObjectIdentifier: Bool]
     @Binding var hovered: Node?
-    var onOpen: (Node) -> Void
+    var onToggle: (Node, Bool) -> Void
     @State private var placed: [Placed] = []
 
     static let padding: CGFloat = 3
@@ -34,7 +36,8 @@ struct TreemapView: View {
             }
             .onTapGesture {
                 guard let target = hovered.map({ $0.isDirectory ? $0 : $0.parent }) ?? nil else { return }
-                onOpen(target)
+                let isOpen = placed.first { $0.node === target }?.open ?? (target === root)
+                onToggle(target, !isOpen)
             }
             .contextMenu {
                 if let hovered {
@@ -45,19 +48,28 @@ struct TreemapView: View {
             .onChange(of: ObjectIdentifier(root)) { relayout(geometry.size) }
             .onChange(of: revision) { relayout(geometry.size) }
             .onChange(of: maxDepth) { relayout(geometry.size) }
-            .onChange(of: extraDepth) { relayout(geometry.size) }
+            .onChange(of: toggles) { relayout(geometry.size) }
         }
     }
 
     private func relayout(_ size: CGSize) {
         var result: [Placed] = []
         // ponytail: whole layout under the scanner's lock; the layout is pixel-bounded, so the scan pauses only for milliseconds.
-        lock.withLock { Self.place(root, in: CGRect(origin: .zero, size: size), depth: 0, budget: maxDepth + (extraDepth[ObjectIdentifier(root)] ?? 0), extraDepth: extraDepth, into: &result) }
+        lock.withLock { Self.place(root, in: CGRect(origin: .zero, size: size), depth: 0, budget: Self.budget(maxDepth, toggles[ObjectIdentifier(root)]), toggles: toggles, into: &result) }
         placed = result
     }
 
-    /// `budget` is how many more levels may be laid out below `node`; clicked folders add to it.
-    static func place(_ node: Node, in rect: CGRect, depth: Int, budget: Int, extraDepth: [ObjectIdentifier: Int], into result: inout [Placed]) {
+    /// An opened folder shows at least one level; a collapsed one shows none.
+    static func budget(_ inherited: Int, _ toggle: Bool?) -> Int {
+        switch toggle {
+        case .some(true): return max(inherited, 1)
+        case .some(false): return 0
+        case .none: return inherited
+        }
+    }
+
+    /// `budget` is how many more levels may be laid out below `node`.
+    static func place(_ node: Node, in rect: CGRect, depth: Int, budget: Int, toggles: [ObjectIdentifier: Bool], into result: inout [Placed]) {
         guard budget > 0 else { return }
         var inner = rect.insetBy(dx: padding, dy: padding)
         if depth > 0, inner.height > header * 2 { inner.origin.y += header; inner.size.height -= header }
@@ -65,9 +77,10 @@ struct TreemapView: View {
         let children = node.children.sorted { $0.size > $1.size }
         let rects = Treemap.layout(children.map { Double($0.size) }, in: inner)
         for (child, childRect) in zip(children, rects) where childRect.width >= minSide && childRect.height >= minSide {
-            result.append(Placed(node: child, rect: childRect, depth: depth + 1))
+            let childBudget = Self.budget(budget - 1, toggles[ObjectIdentifier(child)])
+            result.append(Placed(node: child, rect: childRect, depth: depth + 1, open: child.isDirectory && childBudget > 0))
             if child.isDirectory {
-                place(child, in: childRect, depth: depth + 1, budget: budget - 1 + (extraDepth[ObjectIdentifier(child)] ?? 0), extraDepth: extraDepth, into: &result)
+                place(child, in: childRect, depth: depth + 1, budget: childBudget, toggles: toggles, into: &result)
             }
         }
     }

@@ -31,6 +31,8 @@ final class StorageModel: ObservableObject {
     @Published var current: Node?
     @Published private(set) var progress = ScanProgress()
     @Published private(set) var isScanning = false
+    /// Used bytes of the scanned volume; nil when the target is not a volume root.
+    @Published private(set) var expectedBytes: Int64?
     @Published var hovered: Node?
     /// Bumped while scanning so the treemap re-lays out the growing tree.
     @Published private(set) var revision = 0
@@ -69,6 +71,8 @@ final class StorageModel: ObservableObject {
         current = scanner.root
         hovered = nil
         progress = ScanProgress()
+        let values = try? url.resourceValues(forKeys: [.isVolumeKey, .volumeTotalCapacityKey, .volumeAvailableCapacityKey])
+        expectedBytes = values?.isVolume == true ? Int64((values?.volumeTotalCapacity ?? 0) - (values?.volumeAvailableCapacity ?? 0)) : nil
         task = Task {
             let poll = Task { [weak self] in
                 while !Task.isCancelled {
@@ -137,6 +141,9 @@ struct ContentView: View {
             .clipShape(RoundedRectangle(cornerRadius: 8))
             HStack(spacing: Spacing.gap) {
                 Text(statusText).font(.callout).lineLimit(1).truncationMode(.middle)
+                if model.isScanning, let fraction = scanFraction {
+                    ProgressView(value: fraction).frame(width: Spacing.section * 8)
+                }
                 Spacer()
                 Text(freeSpaceText).font(.caption).foregroundStyle(.secondary)
                 updateControls
@@ -175,9 +182,16 @@ struct ContentView: View {
         }
     }
 
+    /// Used space is the denominator; metadata and unreadable items keep it under 100% until the walk ends.
+    private var scanFraction: Double? {
+        guard let expected = model.expectedBytes, expected > 0 else { return nil }
+        return min(Double(model.progress.bytes) / Double(expected), 0.99)
+    }
+
     private var statusText: String {
         if model.isScanning {
-            return "スキャン中: \(model.progress.files) ファイル / \(StorageModel.format(model.progress.bytes))" + errorSuffix
+            let percent = scanFraction.map { "\(Int($0 * 100))%  " } ?? ""
+            return "スキャン中 \(percent)\(model.progress.files) ファイル / \(StorageModel.format(model.progress.bytes))" + errorSuffix
         }
         guard let node = model.hovered ?? model.current else { return "" }
         return "\(node.url.path)  —  \(StorageModel.format(node.size))" + errorSuffix

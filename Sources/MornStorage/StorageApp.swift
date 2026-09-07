@@ -34,7 +34,8 @@ final class StorageModel: ObservableObject {
     /// Used bytes of the scanned volume; nil when the target is not a volume root.
     @Published private(set) var expectedBytes: Int64?
     @Published var hovered: Node?
-    @Published var toggles: [ObjectIdentifier: Bool] = [:]
+    @Published var depth = DepthState(maxDepth: UserDefaults.standard.object(forKey: "maxDepth") as? Int ?? 8)
+    @Published var focused: Placed?
     /// Bumped while scanning so the treemap re-lays out the growing tree.
     @Published private(set) var revision = 0
     let lock = NSLock()
@@ -71,7 +72,8 @@ final class StorageModel: ObservableObject {
         root = scanner.root
         current = scanner.root
         hovered = nil
-        toggles = [:]
+        depth = DepthState(maxDepth: depth.maxDepth)
+        focused = nil
         progress = ScanProgress()
         let values = try? url.resourceValues(forKeys: [.isVolumeKey, .volumeTotalCapacityKey, .volumeAvailableCapacityKey])
         expectedBytes = values?.isVolume == true ? Int64((values?.volumeTotalCapacity ?? 0) - (values?.volumeAvailableCapacity ?? 0)) : nil
@@ -102,7 +104,6 @@ final class StorageModel: ObservableObject {
 struct ContentView: View {
     @ObservedObject var model: StorageModel
     @ObservedObject var updater: Updater
-    @AppStorage("maxDepth") private var maxDepth = 8
 
     var body: some View {
         VStack(spacing: Spacing.gap) {
@@ -129,8 +130,9 @@ struct ContentView: View {
             .frame(height: Spacing.section * 2)
             Group {
                 if let current = model.current {
-                    TreemapView(root: current, lock: model.lock, revision: model.revision, maxDepth: maxDepth, toggles: model.toggles, hovered: $model.hovered) { node, open in
-                        model.toggles[ObjectIdentifier(node)] = open
+                    TreemapView(root: current, lock: model.lock, revision: model.revision, state: model.depth, focused: model.focused?.node, hovered: $model.hovered) { placed in
+                        model.focused = placed
+                        if let placed { model.depth.toggle(placed) }
                     }
                 } else {
                     Text("ボリュームを選択してスキャンを開始します")
@@ -167,12 +169,17 @@ struct ContentView: View {
 
     private var depthControls: some View {
         HStack(spacing: Spacing.gap / 2) {
-            Button { maxDepth -= 1 } label: { Image(systemName: "minus.square") }
-                .disabled(maxDepth <= 1).help("表示する階層を浅くする").accessibilityLabel("表示する階層を浅くする")
-            Text("\(maxDepth)").monospacedDigit().frame(width: Spacing.section)
-            Button { maxDepth += 1 } label: { Image(systemName: "plus.square") }
-                .disabled(maxDepth >= 30).help("表示する階層を深くする").accessibilityLabel("表示する階層を深くする")
+            Button { shift(-1) } label: { Image(systemName: "minus.square") }
+                .disabled(model.focused == nil && model.depth.maxDepth <= 1)
+                .help("表示する階層を浅くする").accessibilityLabel("表示する階層を浅くする")
+            Button { shift(1) } label: { Image(systemName: "plus.square") }
+                .help("表示する階層を深くする").accessibilityLabel("表示する階層を深くする")
         }
+    }
+
+    private func shift(_ delta: Int) {
+        model.depth.shift(delta, focused: model.focused)
+        UserDefaults.standard.set(model.depth.maxDepth, forKey: "maxDepth")
     }
 
     private var breadcrumb: some View {

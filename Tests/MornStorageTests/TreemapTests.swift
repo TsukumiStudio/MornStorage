@@ -35,19 +35,31 @@ final class TreemapTests: XCTestCase {
         root.children = [dir]; root.size = 1001
         var placed: [Placed] = []
         let bounds = CGRect(x: 0, y: 0, width: 200, height: 200)
-        TreemapView.place(root, in: bounds, depth: 0, budget: 8, toggles: [:], into: &placed)
-        XCTAssertEqual(placed.map(\.node.name), ["dir", "big"])
+        func names(_ state: DepthState) -> [String] {
+            var out: [Placed] = []
+            TreemapView.place(root, in: bounds, depth: 0, budget: state.childBudget(of: root, inherited: state.maxDepth), state: state, into: &out)
+            placed = out
+            return out.map(\.node.name)
+        }
+        var state = DepthState()
+        XCTAssertEqual(names(state), ["dir", "big"])
         XCTAssertTrue(placed[0].open)
-        var shallow: [Placed] = []
-        TreemapView.place(root, in: bounds, depth: 0, budget: 1, toggles: [:], into: &shallow)
-        XCTAssertEqual(shallow.map(\.node.name), ["dir"])
-        XCTAssertFalse(shallow[0].open)
-        var expanded: [Placed] = []
-        TreemapView.place(root, in: bounds, depth: 0, budget: 1, toggles: [ObjectIdentifier(dir): true], into: &expanded)
-        XCTAssertEqual(expanded.map(\.node.name), ["dir", "big"])
-        var collapsed: [Placed] = []
-        TreemapView.place(root, in: bounds, depth: 0, budget: 8, toggles: [ObjectIdentifier(dir): false], into: &collapsed)
-        XCTAssertEqual(collapsed.map(\.node.name), ["dir"])
+        state.maxDepth = 1
+        XCTAssertEqual(names(state), ["dir"])
+        XCTAssertFalse(placed[0].open)
+        state.toggle(placed[0])                       // click a closed folder: opens one level
+        XCTAssertEqual(names(state), ["dir", "big"])
+        state.toggle(placed[0])                       // click again: closes
+        XCTAssertEqual(names(state), ["dir"])
+        state.shift(1, focused: nil)                  // no focus: everything one deeper
+        XCTAssertEqual(state.maxDepth, 2)
+        XCTAssertEqual(names(state), ["dir"], "hand-closed folder stays closed")
+        state.shift(1, focused: placed[0])            // focus: reopens and deepens that folder
+        XCTAssertEqual(names(state), ["dir", "big"])
+        XCTAssertEqual(state.childBudget(of: dir, inherited: 1), 3)
+        for _ in 0..<3 { state.shift(-1, focused: placed[0]) }
+        XCTAssertEqual(names(state), ["dir"])
+        XCTAssertEqual(names(DepthState()), ["dir", "big"])
         let dirRect = try XCTUnwrap(placed.first?.rect)
         XCTAssertTrue(dirRect.contains(placed[1].rect))
         XCTAssertEqual(big.ancestors.map(\.name), ["root", "dir", "big"])

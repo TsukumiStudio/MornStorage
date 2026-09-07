@@ -18,7 +18,7 @@ if [[ -n "${VERSION:-}" ]]; then
 fi
 # A Developer ID signature keeps the app's identity stable across rebuilds, so TCC remembers
 # granted folder access; ad-hoc signing changes identity every build and re-prompts each launch.
-identity="${SIGN_IDENTITY:-$(security find-identity -v -p codesigning 2>/dev/null | grep -o '"Developer ID Application[^"]*"' | head -1 | tr -d '"')}"
+identity="${SIGN_IDENTITY:-$(security find-identity -v -p codesigning 2>/dev/null | grep -o '"Developer ID Application[^"]*"' | head -1 | tr -d '"' || true)}"
 codesign --force --sign "${identity:--}" --identifier studio.tsukumi.MornStorage "$app_path"
 print "Signed with: ${identity:-ad-hoc}"
 print "Built: $app_path"

@@ -33,6 +33,8 @@ final class StorageModel: ObservableObject {
     @Published private(set) var isScanning = false
     /// Used bytes of the scanned volume; nil when the target is not a volume root.
     @Published private(set) var expectedBytes: Int64?
+    /// Set while a previous scan's tree is on screen and a fresh scan runs behind it.
+    @Published private(set) var cachedDate: Date?
     @Published var hovered: Node?
     @Published var depth = DepthState(maxDepth: UserDefaults.standard.object(forKey: "maxDepth") as? Int ?? 3)
     @Published var focused: Placed?
@@ -64,13 +66,24 @@ final class StorageModel: ObservableObject {
         }
     }
 
-    func scan(_ url: URL) {
+    /// Shows the last completed scan of this volume right away (when one is saved), then rescans behind it.
+    func open(_ url: URL) {
+        UserDefaults.standard.set(url.path, forKey: "lastVolume")
+        if let cached = TreeCache.load(path: url.path) {
+            scan(url, showing: cached.root, date: cached.date)
+        } else {
+            scan(url)
+        }
+    }
+
+    func scan(_ url: URL, showing cached: Node? = nil, date: Date? = nil) {
         cancel()
         let scanner = Scanner(url: url, lock: lock)
         self.scanner = scanner
         isScanning = true
-        root = scanner.root
-        current = scanner.root
+        root = cached ?? scanner.root
+        current = root
+        cachedDate = date
         hovered = nil
         depth = DepthState(maxDepth: depth.maxDepth)
         focused = nil
@@ -89,7 +102,16 @@ final class StorageModel: ObservableObject {
             poll.cancel()
             progress = scanner.snapshot()
             revision += 1
-            if self.scanner === scanner { isScanning = false }
+            guard self.scanner === scanner else { return }
+            isScanning = false
+            if cached != nil {
+                root = scanner.root
+                current = scanner.root
+                cachedDate = nil
+                depth = DepthState(maxDepth: depth.maxDepth)
+                focused = nil
+            }
+            Task.detached(priority: .utility) { try? TreeCache.save(scanner.root) }
         }
     }
 
@@ -111,7 +133,7 @@ struct ContentView: View {
                 Menu("ボリュームを選択") {
                     ForEach(StorageModel.volumes()) { volume in
                         Button("\(volume.name)  (\(StorageModel.format(volume.total - volume.available)) / \(StorageModel.format(volume.total)))") {
-                            model.scan(volume.url)
+                            model.open(volume.url)
                         }
                     }
                 }
@@ -165,6 +187,8 @@ struct ContentView: View {
             // A path argument would make AppKit treat launch as "open file" and skip the window, so use an env var.
             if let path = ProcessInfo.processInfo.environment["MORNSTORAGE_PATH"] {
                 model.scan(URL(fileURLWithPath: path))
+            } else if let last = UserDefaults.standard.string(forKey: "lastVolume") {
+                model.open(URL(fileURLWithPath: last))
             }
         }
     }
@@ -204,7 +228,8 @@ struct ContentView: View {
     private var statusText: String {
         if model.isScanning {
             let percent = scanFraction.map { "\(Int($0 * 100))%  " } ?? ""
-            return "スキャン中 \(percent)\(model.progress.files) ファイル / \(StorageModel.format(model.progress.bytes))" + errorSuffix
+            let cached = model.cachedDate.map { "前回 (\($0.formatted(date: .numeric, time: .shortened))) の結果を表示中 · " } ?? ""
+            return "\(cached)スキャン中 \(percent)\(model.progress.files) ファイル / \(StorageModel.format(model.progress.bytes))" + errorSuffix
         }
         guard let node = model.hovered ?? model.current else { return "" }
         return "\(node.path)  —  \(StorageModel.format(node.size))" + errorSuffix

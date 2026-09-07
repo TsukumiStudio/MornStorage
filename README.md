@@ -54,6 +54,22 @@ MORNSTORAGE_BENCH="$HOME/Library" swift test --filter ScannerBench   # 走査速
 zsh build.sh   # dist/MornStorage.app
 ```
 
+## リリース
+
+`v*` タグを push すると GitHub Actions (`.github/workflows/release.yml`) が次を自動で行います。
+
+1. universal バイナリでビルドし、`Support/Info.plist` のバージョンをタグに合わせる
+2. [MornNotary](https://github.com/matsufriends/MornNotary) に zip を送って Developer ID 署名と公証を受ける
+3. GitHub Release に `MornStorage.app.zip` を添付
+4. [TsukumiStudio/homebrew-tap](https://github.com/TsukumiStudio/homebrew-tap) の `Casks/mornstorage.rb` を更新
+
+```bash
+git tag v0.1.0
+git push origin main v0.1.0
+```
+
+Actions secrets に `MORN_NOTARY_TOKEN` (MornNotary へ push できる PAT) と `HOMEBREW_TAP_TOKEN` (homebrew-tap へ push できる PAT) が必要です。`workflow_dispatch` で手動実行すると、Release と cask を変更せずに署名・公証までを試せます。
+
 ## ライセンス
 
 [The Unlicense](LICENSE)

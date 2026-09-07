@@ -32,6 +32,9 @@ final class StorageModel: ObservableObject {
     @Published private(set) var progress = ScanProgress()
     @Published private(set) var isScanning = false
     @Published var hovered: Node?
+    /// Bumped while scanning so the treemap re-lays out the growing tree.
+    @Published private(set) var revision = 0
+    let lock = NSLock()
     private var scanner: Scanner?
     private var task: Task<Void, Never>?
 
@@ -39,39 +42,46 @@ final class StorageModel: ObservableObject {
         ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
     }
 
-    func chooseFolder() {
-        let panel = NSOpenPanel()
-        panel.canChooseDirectories = true
-        panel.canChooseFiles = false
-        panel.prompt = "スキャン"
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-        scan(url)
+    struct Volume: Identifiable {
+        let url: URL
+        let name: String
+        let total: Int64
+        let available: Int64
+        var id: String { url.path }
+    }
+
+    static func volumes() -> [Volume] {
+        let keys: Set<URLResourceKey> = [.volumeNameKey, .volumeTotalCapacityKey, .volumeAvailableCapacityKey]
+        let urls = FileManager.default.mountedVolumeURLs(includingResourceValuesForKeys: Array(keys), options: [.skipHiddenVolumes]) ?? []
+        return urls.compactMap { url in
+            guard let values = try? url.resourceValues(forKeys: keys) else { return nil }
+            return Volume(url: url, name: values.volumeName ?? url.lastPathComponent,
+                          total: Int64(values.volumeTotalCapacity ?? 0), available: Int64(values.volumeAvailableCapacity ?? 0))
+        }
     }
 
     func scan(_ url: URL) {
         cancel()
-        let scanner = Scanner()
+        let scanner = Scanner(url: url, lock: lock)
         self.scanner = scanner
         isScanning = true
-        root = nil
-        current = nil
+        root = scanner.root
+        current = scanner.root
         hovered = nil
         progress = ScanProgress()
         task = Task {
             let poll = Task { [weak self] in
                 while !Task.isCancelled {
                     self?.progress = scanner.snapshot()
-                    try? await Task.sleep(for: .milliseconds(200))
+                    self?.revision += 1
+                    try? await Task.sleep(for: .milliseconds(300))
                 }
             }
-            let node = await Task.detached(priority: .userInitiated) { scanner.scan(url) }.value
+            await Task.detached(priority: .userInitiated) { scanner.run() }.value
             poll.cancel()
             progress = scanner.snapshot()
-            if self.scanner === scanner {
-                root = node
-                current = node
-                isScanning = false
-            }
+            revision += 1
+            if self.scanner === scanner { isScanning = false }
         }
     }
 
@@ -90,7 +100,14 @@ struct ContentView: View {
     var body: some View {
         VStack(spacing: Spacing.gap) {
             HStack(spacing: Spacing.gap) {
-                Button("フォルダを選択") { model.chooseFolder() }.disabled(model.isScanning)
+                Menu("ボリュームを選択") {
+                    ForEach(StorageModel.volumes()) { volume in
+                        Button("\(volume.name)  (\(StorageModel.format(volume.total - volume.available)) / \(StorageModel.format(volume.total)))") {
+                            model.scan(volume.url)
+                        }
+                    }
+                }
+                .fixedSize().disabled(model.isScanning)
                 if let root = model.root {
                     Button("再スキャン") { model.scan(root.url) }
                 }
@@ -104,12 +121,15 @@ struct ContentView: View {
             .frame(height: Spacing.section * 2)
             Group {
                 if let current = model.current {
-                    TreemapView(root: current, hovered: $model.hovered) { model.current = $0 }
+                    TreemapView(root: current, lock: model.lock, revision: model.revision, hovered: $model.hovered) { model.current = $0 }
                 } else {
-                    Text(model.isScanning ? "スキャン中…" : "フォルダを選択してスキャンを開始します")
+                    Text("ボリュームを選択してスキャンを開始します")
                         .foregroundStyle(.secondary)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
+            }
+            .overlay(alignment: .center) {
+                if model.isScanning, model.root?.size == 0 { Text("スキャン中…").foregroundStyle(.secondary) }
             }
             .background(Color(nsColor: .windowBackgroundColor))
             .clipShape(RoundedRectangle(cornerRadius: 4))

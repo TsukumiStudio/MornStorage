@@ -34,6 +34,7 @@ final class StorageModel: ObservableObject {
     /// Used bytes of the scanned volume; nil when the target is not a volume root.
     @Published private(set) var expectedBytes: Int64?
     @Published var hovered: Node?
+    @Published var extraDepth: [ObjectIdentifier: Int] = [:]
     /// Bumped while scanning so the treemap re-lays out the growing tree.
     @Published private(set) var revision = 0
     let lock = NSLock()
@@ -70,6 +71,7 @@ final class StorageModel: ObservableObject {
         root = scanner.root
         current = scanner.root
         hovered = nil
+        extraDepth = [:]
         progress = ScanProgress()
         let values = try? url.resourceValues(forKeys: [.isVolumeKey, .volumeTotalCapacityKey, .volumeAvailableCapacityKey])
         expectedBytes = values?.isVolume == true ? Int64((values?.volumeTotalCapacity ?? 0) - (values?.volumeAvailableCapacity ?? 0)) : nil
@@ -127,7 +129,9 @@ struct ContentView: View {
             .frame(height: Spacing.section * 2)
             Group {
                 if let current = model.current {
-                    TreemapView(root: current, lock: model.lock, revision: model.revision, maxDepth: maxDepth, hovered: $model.hovered) { model.current = $0 }
+                    TreemapView(root: current, lock: model.lock, revision: model.revision, maxDepth: maxDepth, extraDepth: model.extraDepth, hovered: $model.hovered) {
+                        model.extraDepth[ObjectIdentifier($0), default: 0] += 1
+                    }
                 } else {
                     Text("ボリュームを選択してスキャンを開始します")
                         .foregroundStyle(.secondary)
@@ -175,7 +179,7 @@ struct ContentView: View {
         HStack(spacing: Spacing.gap / 2) {
             ForEach(Array((model.current?.ancestors ?? []).enumerated()), id: \.offset) { index, node in
                 if index > 0 { Text("›").foregroundStyle(.secondary) }
-                Button(node.name.isEmpty ? node.url.path : node.name) { model.current = node }
+                Button(node.name.isEmpty ? "Root" : node.name) { model.current = node }
                     .buttonStyle(.plain)
                     .fontWeight(node === model.current ? .bold : .regular)
             }

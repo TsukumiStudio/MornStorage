@@ -11,6 +11,8 @@ struct TreemapView: View {
     let lock: NSLock
     let revision: Int
     let maxDepth: Int
+    /// Extra levels revealed under a folder by clicking it, keyed by node identity.
+    let extraDepth: [ObjectIdentifier: Int]
     @Binding var hovered: Node?
     var onOpen: (Node) -> Void
     @State private var placed: [Placed] = []
@@ -31,7 +33,7 @@ struct TreemapView: View {
                 }
             }
             .onTapGesture {
-                guard let target = hovered.map({ $0.isDirectory ? $0 : $0.parent }) ?? nil, target !== root else { return }
+                guard let target = hovered.map({ $0.isDirectory ? $0 : $0.parent }) ?? nil else { return }
                 onOpen(target)
             }
             .contextMenu {
@@ -43,18 +45,20 @@ struct TreemapView: View {
             .onChange(of: ObjectIdentifier(root)) { relayout(geometry.size) }
             .onChange(of: revision) { relayout(geometry.size) }
             .onChange(of: maxDepth) { relayout(geometry.size) }
+            .onChange(of: extraDepth) { relayout(geometry.size) }
         }
     }
 
     private func relayout(_ size: CGSize) {
         var result: [Placed] = []
         // ponytail: whole layout under the scanner's lock; the layout is pixel-bounded, so the scan pauses only for milliseconds.
-        lock.withLock { Self.place(root, in: CGRect(origin: .zero, size: size), depth: 0, maxDepth: maxDepth, into: &result) }
+        lock.withLock { Self.place(root, in: CGRect(origin: .zero, size: size), depth: 0, budget: maxDepth + (extraDepth[ObjectIdentifier(root)] ?? 0), extraDepth: extraDepth, into: &result) }
         placed = result
     }
 
-    static func place(_ node: Node, in rect: CGRect, depth: Int, maxDepth: Int, into result: inout [Placed]) {
-        guard depth < maxDepth else { return }
+    /// `budget` is how many more levels may be laid out below `node`; clicked folders add to it.
+    static func place(_ node: Node, in rect: CGRect, depth: Int, budget: Int, extraDepth: [ObjectIdentifier: Int], into result: inout [Placed]) {
+        guard budget > 0 else { return }
         var inner = rect.insetBy(dx: padding, dy: padding)
         if depth > 0, inner.height > header * 2 { inner.origin.y += header; inner.size.height -= header }
         guard inner.width >= minSide, inner.height >= minSide else { return }
@@ -62,7 +66,9 @@ struct TreemapView: View {
         let rects = Treemap.layout(children.map { Double($0.size) }, in: inner)
         for (child, childRect) in zip(children, rects) where childRect.width >= minSide && childRect.height >= minSide {
             result.append(Placed(node: child, rect: childRect, depth: depth + 1))
-            if child.isDirectory { place(child, in: childRect, depth: depth + 1, maxDepth: maxDepth, into: &result) }
+            if child.isDirectory {
+                place(child, in: childRect, depth: depth + 1, budget: budget - 1 + (extraDepth[ObjectIdentifier(child)] ?? 0), extraDepth: extraDepth, into: &result)
+            }
         }
     }
 

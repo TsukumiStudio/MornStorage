@@ -34,11 +34,15 @@ final class TreemapTests: XCTestCase {
         dir.children = [tiny, big]; dir.size = 1001
         root.children = [dir]; root.size = 1001
         var placed: [Placed] = []
-        TreemapView.place(root, in: CGRect(x: 0, y: 0, width: 200, height: 200), depth: 0, maxDepth: 8, into: &placed)
+        let bounds = CGRect(x: 0, y: 0, width: 200, height: 200)
+        TreemapView.place(root, in: bounds, depth: 0, budget: 8, extraDepth: [:], into: &placed)
         XCTAssertEqual(placed.map(\.node.name), ["dir", "big"])
         var shallow: [Placed] = []
-        TreemapView.place(root, in: CGRect(x: 0, y: 0, width: 200, height: 200), depth: 0, maxDepth: 1, into: &shallow)
+        TreemapView.place(root, in: bounds, depth: 0, budget: 1, extraDepth: [:], into: &shallow)
         XCTAssertEqual(shallow.map(\.node.name), ["dir"])
+        var expanded: [Placed] = []
+        TreemapView.place(root, in: bounds, depth: 0, budget: 1, extraDepth: [ObjectIdentifier(dir): 1], into: &expanded)
+        XCTAssertEqual(expanded.map(\.node.name), ["dir", "big"])
         let dirRect = try XCTUnwrap(placed.first?.rect)
         XCTAssertTrue(dirRect.contains(placed[1].rect))
         XCTAssertEqual(big.ancestors.map(\.name), ["root", "dir", "big"])

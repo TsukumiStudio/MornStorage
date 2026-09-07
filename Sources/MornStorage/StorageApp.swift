@@ -128,6 +128,8 @@ struct ContentView: View {
                 depthControls
             }
             .frame(height: Spacing.section * 2)
+            .contentShape(Rectangle())
+            .onTapGesture { model.focused = nil }
             Group {
                 if let current = model.current {
                     TreemapView(root: current, lock: model.lock, revision: model.revision, state: model.depth, focused: model.focused?.node, hovered: $model.hovered) { placed in
@@ -205,7 +207,7 @@ struct ContentView: View {
             return "スキャン中 \(percent)\(model.progress.files) ファイル / \(StorageModel.format(model.progress.bytes))" + errorSuffix
         }
         guard let node = model.hovered ?? model.current else { return "" }
-        return "\(node.url.path)  —  \(StorageModel.format(node.size))" + errorSuffix
+        return "\(node.path)  —  \(StorageModel.format(node.size))" + errorSuffix
     }
 
     private var errorSuffix: String {

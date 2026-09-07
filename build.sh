@@ -16,5 +16,9 @@ if [[ -n "${VERSION:-}" ]]; then
     /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION" "$app_path/Contents/Info.plist"
     /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $VERSION" "$app_path/Contents/Info.plist"
 fi
-codesign --force --sign - --identifier studio.tsukumi.MornStorage "$app_path"
+# A Developer ID signature keeps the app's identity stable across rebuilds, so TCC remembers
+# granted folder access; ad-hoc signing changes identity every build and re-prompts each launch.
+identity="${SIGN_IDENTITY:-$(security find-identity -v -p codesigning 2>/dev/null | grep -o '"Developer ID Application[^"]*"' | head -1 | tr -d '"')}"
+codesign --force --sign "${identity:--}" --identifier studio.tsukumi.MornStorage "$app_path"
+print "Signed with: ${identity:-ad-hoc}"
 print "Built: $app_path"

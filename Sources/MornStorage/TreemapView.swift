@@ -10,6 +10,7 @@ struct TreemapView: View {
     let root: Node
     let lock: NSLock
     let revision: Int
+    let maxDepth: Int
     @Binding var hovered: Node?
     var onOpen: (Node) -> Void
     @State private var placed: [Placed] = []
@@ -41,17 +42,19 @@ struct TreemapView: View {
             .onChange(of: geometry.size, initial: true) { relayout(geometry.size) }
             .onChange(of: ObjectIdentifier(root)) { relayout(geometry.size) }
             .onChange(of: revision) { relayout(geometry.size) }
+            .onChange(of: maxDepth) { relayout(geometry.size) }
         }
     }
 
     private func relayout(_ size: CGSize) {
         var result: [Placed] = []
         // ponytail: whole layout under the scanner's lock; the layout is pixel-bounded, so the scan pauses only for milliseconds.
-        lock.withLock { Self.place(root, in: CGRect(origin: .zero, size: size), depth: 0, into: &result) }
+        lock.withLock { Self.place(root, in: CGRect(origin: .zero, size: size), depth: 0, maxDepth: maxDepth, into: &result) }
         placed = result
     }
 
-    static func place(_ node: Node, in rect: CGRect, depth: Int, into result: inout [Placed]) {
+    static func place(_ node: Node, in rect: CGRect, depth: Int, maxDepth: Int, into result: inout [Placed]) {
+        guard depth < maxDepth else { return }
         var inner = rect.insetBy(dx: padding, dy: padding)
         if depth > 0, inner.height > header * 2 { inner.origin.y += header; inner.size.height -= header }
         guard inner.width >= minSide, inner.height >= minSide else { return }
@@ -59,7 +62,7 @@ struct TreemapView: View {
         let rects = Treemap.layout(children.map { Double($0.size) }, in: inner)
         for (child, childRect) in zip(children, rects) where childRect.width >= minSide && childRect.height >= minSide {
             result.append(Placed(node: child, rect: childRect, depth: depth + 1))
-            if child.isDirectory { place(child, in: childRect, depth: depth + 1, into: &result) }
+            if child.isDirectory { place(child, in: childRect, depth: depth + 1, maxDepth: maxDepth, into: &result) }
         }
     }
 

@@ -96,6 +96,7 @@ final class StorageModel: ObservableObject {
 struct ContentView: View {
     @ObservedObject var model: StorageModel
     @ObservedObject var updater: Updater
+    @AppStorage("maxDepth") private var maxDepth = 8
 
     var body: some View {
         VStack(spacing: Spacing.gap) {
@@ -117,11 +118,12 @@ struct ContentView: View {
                 Divider().frame(height: Spacing.section)
                 breadcrumb
                 Spacer()
+                depthControls
             }
             .frame(height: Spacing.section * 2)
             Group {
                 if let current = model.current {
-                    TreemapView(root: current, lock: model.lock, revision: model.revision, hovered: $model.hovered) { model.current = $0 }
+                    TreemapView(root: current, lock: model.lock, revision: model.revision, maxDepth: maxDepth, hovered: $model.hovered) { model.current = $0 }
                 } else {
                     Text("ボリュームを選択してスキャンを開始します")
                         .foregroundStyle(.secondary)
@@ -149,6 +151,16 @@ struct ContentView: View {
             if let path = ProcessInfo.processInfo.environment["MORNSTORAGE_PATH"] {
                 model.scan(URL(fileURLWithPath: path))
             }
+        }
+    }
+
+    private var depthControls: some View {
+        HStack(spacing: Spacing.gap / 2) {
+            Button { maxDepth -= 1 } label: { Image(systemName: "minus.square") }
+                .disabled(maxDepth <= 1).help("表示する階層を浅くする").accessibilityLabel("表示する階層を浅くする")
+            Text("\(maxDepth)").monospacedDigit().frame(width: Spacing.section)
+            Button { maxDepth += 1 } label: { Image(systemName: "plus.square") }
+                .disabled(maxDepth >= 30).help("表示する階層を深くする").accessibilityLabel("表示する階層を深くする")
         }
     }
 

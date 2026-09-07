@@ -179,7 +179,7 @@ struct ContentView: View {
         HStack(spacing: Spacing.gap / 2) {
             ForEach(Array((model.current?.ancestors ?? []).enumerated()), id: \.offset) { index, node in
                 if index > 0 { Text("›").foregroundStyle(.secondary) }
-                Button(node.name.isEmpty ? "Root" : node.name) { model.current = node }
+                Button(node.name) { model.current = node }
                     .buttonStyle(.plain)
                     .fontWeight(node === model.current ? .bold : .regular)
             }

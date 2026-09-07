@@ -10,7 +10,8 @@ final class Node {
 
     init(url: URL, isDirectory: Bool, parent: Node?) {
         self.url = url
-        self.name = url.lastPathComponent
+        // "/" would be a one-character breadcrumb that is hard to hit.
+        self.name = url.path == "/" ? "Root" : url.lastPathComponent
         self.isDirectory = isDirectory
         self.parent = parent
     }

@@ -24,3 +24,10 @@ final class ScannerTests: XCTestCase {
         XCTAssertFalse(try XCTUnwrap(root.children.first { $0.name == "loop" }).isDirectory)
     }
 }
+
+extension ScannerTests {
+    func testRootVolumeIsNamedRoot() {
+        XCTAssertEqual(Node(url: URL(fileURLWithPath: "/"), isDirectory: true, parent: nil).name, "Root")
+        XCTAssertEqual(Node(url: URL(fileURLWithPath: "/Users"), isDirectory: true, parent: nil).name, "Users")
+    }
+}

@@ -2,19 +2,26 @@ import Foundation
 
 final class Node {
     let name: String
-    let url: URL
+    /// Plain path: building a Foundation URL per entry costs more than the directory read itself.
+    let path: String
     let isDirectory: Bool
     var size: Int64 = 0
     var children: [Node] = []
     weak var parent: Node?
 
-    init(url: URL, isDirectory: Bool, parent: Node?) {
-        self.url = url
+    init(path: String, isDirectory: Bool, parent: Node?) {
+        self.path = path
         // "/" would be a one-character breadcrumb that is hard to hit.
-        self.name = url.path == "/" ? "Root" : url.lastPathComponent
+        self.name = path == "/" ? "Root" : String(path[path.index(after: path.lastIndex(of: "/") ?? path.startIndex)...])
         self.isDirectory = isDirectory
         self.parent = parent
     }
+
+    convenience init(url: URL, isDirectory: Bool, parent: Node?) {
+        self.init(path: url.path, isDirectory: isDirectory, parent: parent)
+    }
+
+    var url: URL { URL(fileURLWithPath: path, isDirectory: isDirectory) }
 
     var ancestors: [Node] {
         var chain: [Node] = []
@@ -57,7 +64,7 @@ final class Scanner: @unchecked Sendable {
 
     private func walk(_ directory: Node) {
         if isCancelled { return }
-        let fd = open(directory.url.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW)
+        let fd = open(directory.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW)
         guard fd >= 0 else { lock.withLock { progress.errors += 1 }; return }
         defer { close(fd) }
         var files: [Node] = [], directories: [Node] = []
@@ -65,6 +72,7 @@ final class Scanner: @unchecked Sendable {
         var request = attrlist(bitmapcount: u_short(ATTR_BIT_MAP_COUNT), reserved: 0,
                                commonattr: attrgroup_t(ATTR_CMN_RETURNED_ATTRS) | attrgroup_t(ATTR_CMN_NAME) | attrgroup_t(ATTR_CMN_OBJTYPE),
                                volattr: 0, dirattr: attrgroup_t(ATTR_DIR_MOUNTSTATUS), fileattr: attrgroup_t(ATTR_FILE_ALLOCSIZE), forkattr: 0)
+        let prefix = directory.path.hasSuffix("/") ? directory.path : directory.path + "/"
         let buffer = UnsafeMutableRawPointer.allocate(byteCount: 256 * 1024, alignment: 8)
         defer { buffer.deallocate() }
         while true {
@@ -101,10 +109,10 @@ final class Scanner: @unchecked Sendable {
                 if type == UInt32(VDIR.rawValue) {
                     // Another volume's mount point (e.g. /Volumes/X, /System/Volumes/Data) belongs to that volume's scan.
                     if mountStatus & UInt32(DIR_MNTSTATUS_MNTPOINT) != 0 { continue }
-                    directories.append(Node(url: directory.url.appendingPathComponent(name, isDirectory: true), isDirectory: true, parent: directory))
+                    directories.append(Node(path: prefix + name, isDirectory: true, parent: directory))
                 } else {
                     // Symlinks and everything else count as files, so a link never doubles or loops its target.
-                    let child = Node(url: directory.url.appendingPathComponent(name, isDirectory: false), isDirectory: false, parent: directory)
+                    let child = Node(path: prefix + name, isDirectory: false, parent: directory)
                     child.size = allocated
                     files.append(child)
                     bytes += allocated

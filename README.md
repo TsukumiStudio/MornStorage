@@ -1,3 +1,5 @@
+![MornStorage](design/ogp.png)
+
 # MornStorage
 
 ディスク使用量をツリーマップで可視化する Mac アプリです (SpaceSniffer 風)。

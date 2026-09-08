@@ -1,6 +1,6 @@
 import Foundation
 
-/// Last completed scan per volume, so the next launch shows a tree immediately while rescanning.
+/// Last completed scan per volume, displayed while the next manual scan runs.
 /// Binary layout per node, depth first: name length u16, name utf8, isDirectory u8, size i64, child count u32.
 enum TreeCache {
     static var directory: URL {

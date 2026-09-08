@@ -4,6 +4,61 @@ import os
 
 final class StorageModelTests: XCTestCase {
     @MainActor
+    func testExternalDeletionUpdatesTreeWithoutRescanning() async throws {
+        let fm = FileManager.default
+        let base = fm.temporaryDirectory.appendingPathComponent("MornStorageLive-\(UUID())")
+        let folder = base.appendingPathComponent("folder")
+        try fm.createDirectory(at: folder, withIntermediateDirectories: true)
+        try Data(count: 8192).write(to: folder.appendingPathComponent("removed"))
+        try Data(count: 4096).write(to: folder.appendingPathComponent("remaining"))
+        try Data(count: 4096).write(to: base.appendingPathComponent("keep"))
+        let link = base.appendingPathComponent("link")
+        try fm.createSymbolicLink(atPath: link.path, withDestinationPath: "missing")
+        defer {
+            try? fm.removeItem(at: base)
+            try? fm.removeItem(at: TreeCache.file(for: base.path))
+        }
+        let model = StorageModel(accessCheck: { true })
+        await model.refreshAccess()
+        model.selectVolume(base, name: "監視テスト")
+        model.startScan()
+        for _ in 0..<200 where model.isScanning { try await Task.sleep(for: .milliseconds(10)) }
+        XCTAssertEqual(model.scanState, .finished)
+        XCTAssertNil(model.liveUpdateWarning)
+        let root = try XCTUnwrap(model.root)
+        let directory = try XCTUnwrap(root.children.first { $0.name == "folder" })
+        let keep = try XCTUnwrap(root.children.first { $0.name == "keep" })
+        let symlink = try XCTUnwrap(root.children.first { $0.name == "link" })
+        let original = root.size
+        XCTAssertGreaterThan(directory.size, 0)
+        for _ in 0..<200 where TreeCache.load(path: base.path) == nil { try await Task.sleep(for: .milliseconds(10)) }
+        XCTAssertNotNil(TreeCache.load(path: base.path))
+
+        // A rename event for a dangling symlink must not be mistaken for a deletion.
+        let temporaryLink = base.appendingPathComponent("renamed-link")
+        try fm.moveItem(at: link, to: temporaryLink)
+        try fm.moveItem(at: temporaryLink, to: link)
+        try fm.removeItem(at: folder.appendingPathComponent("removed"))
+        for _ in 0..<160 where directory.children.contains(where: { $0.name == "removed" }) { try await Task.sleep(for: .milliseconds(50)) }
+        XCTAssertEqual(directory.children.map(\.name), ["remaining"], "A real filesystem event must remove only the deleted file")
+        XCTAssertLessThan(root.size, original)
+        XCTAssertEqual(root.size, keep.size + symlink.size + directory.size)
+        XCTAssertTrue(root.children.contains { $0 === symlink })
+        XCTAssertTrue(model.root === root, "Do not replace the tree with an automatic rescan")
+        XCTAssertEqual(model.scanState, .finished)
+
+        model.current = directory
+        try fm.moveItem(at: folder, to: base.appendingPathComponent("moved-folder"))
+        for _ in 0..<160 where root.children.contains(where: { $0 === directory }) { try await Task.sleep(for: .milliseconds(50)) }
+        XCTAssertFalse(root.children.contains { $0 === directory })
+        XCTAssertEqual(root.size, keep.size + symlink.size)
+        XCTAssertTrue(model.current === root, "Return to the surviving parent when the open folder disappears")
+        XCTAssertFalse(root.children.contains { $0.name == "moved-folder" }, "Additions wait for an explicit scan")
+        for _ in 0..<100 where TreeCache.load(path: base.path) != nil { try await Task.sleep(for: .milliseconds(10)) }
+        XCTAssertNil(TreeCache.load(path: base.path), "Deleted entries must not return from an old cache")
+    }
+
+    @MainActor
     func testSelectingVolumeWaitsForExplicitStart() async throws {
         let base = FileManager.default.temporaryDirectory.appendingPathComponent("MornStorageSelect-\(UUID())")
         try FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)

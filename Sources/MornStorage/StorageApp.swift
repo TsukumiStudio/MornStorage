@@ -63,6 +63,8 @@ final class StorageModel: ObservableObject {
     let lock = NSLock()
     private var scanner: Scanner?
     private var task: Task<Void, Never>?
+    private var deletionWatcher: DeletionWatcher?
+    @Published private(set) var liveUpdateWarning: String?
     @Published private(set) var hasFullDiskAccess = false
     @Published private(set) var selectedVolume: URL?
     @Published private(set) var selectedVolumeName = "ボリュームを選択"
@@ -83,7 +85,12 @@ final class StorageModel: ObservableObject {
             accessTask = Task {
                 let granted = await Task.detached(priority: .userInitiated) { check() }.value
                 hasFullDiskAccess = granted
-                if !granted { cancel() }
+                if !granted {
+                    cancel()
+                    deletionWatcher = nil
+                } else if !isScanning && deletionWatcher == nil {
+                    watchDeletions()
+                }
                 isCheckingAccess = false
                 accessTask = nil
                 return granted
@@ -116,6 +123,8 @@ final class StorageModel: ObservableObject {
 
     func selectVolume(_ url: URL, name: String) {
         guard canScan else { return }
+        deletionWatcher = nil
+        liveUpdateWarning = nil
         selectedVolume = url
         selectedVolumeName = name
         root = nil
@@ -139,6 +148,8 @@ final class StorageModel: ObservableObject {
 
     func scan(_ url: URL, showing cached: Node? = nil, date: Date? = nil) {
         guard canScan else { return }
+        deletionWatcher = nil
+        liveUpdateWarning = nil
         let scanner = Scanner(url: url, lock: lock)
         self.scanner = scanner
         scanState = .scanning
@@ -168,6 +179,7 @@ final class StorageModel: ObservableObject {
             task = nil
             guard !Task.isCancelled else {
                 scanState = .stopped
+                watchDeletions()
                 return
             }
             scanState = .finished
@@ -178,8 +190,34 @@ final class StorageModel: ObservableObject {
                 depth = DepthState(maxDepth: depth.maxDepth)
                 focused = nil
             }
-            Task.detached(priority: .utility) { try? TreeCache.save(scanner.root) }
+            let treeLock = lock
+            Task.detached(priority: .utility) { treeLock.withLock { try? TreeCache.save(scanner.root) } }
+            watchDeletions()
         }
+    }
+
+    private func watchDeletions() {
+        guard hasFullDiskAccess, let root else { return }
+        deletionWatcher = DeletionWatcher(url: root.url) { [weak self, weak root] paths, dropped in
+            Task { @MainActor in
+                guard let self, let root, self.root === root, !self.isScanning, self.hasFullDiskAccess else { return }
+                if dropped { self.liveUpdateWarning = "変更通知を取りこぼしました。最新の状態には再スキャンが必要です。" }
+                let prefix = root.path.hasSuffix("/") ? root.path : root.path + "/"
+                var changed = false
+                for path in Set(paths).sorted(by: { $0.count < $1.count }) where path.hasPrefix(prefix) {
+                    var node: Node? = root
+                    for part in path.dropFirst(prefix.count).split(separator: "/") {
+                        node = node?.children.first { $0.name == part }
+                    }
+                    if let node {
+                        self.removeFromTree(node)
+                        changed = true
+                    }
+                }
+                if changed { self.invalidateCache() }
+            }
+        }
+        if deletionWatcher == nil { liveUpdateWarning = "削除の監視を開始できませんでした。変更後は再スキャンしてください。" }
     }
 
     func menu(_ action: TreemapView.MenuAction, _ item: Placed) {
@@ -202,7 +240,7 @@ final class StorageModel: ObservableObject {
 
     /// Moves to the Trash (recoverable) after confirmation, then drops the node from the tree.
     private func trash(_ node: Node) {
-        guard canScan, let parent = node.parent else { return }
+        guard canScan, node.parent != nil else { return }
         let alert = NSAlert()
         alert.messageText = "「\(node.name)」をゴミ箱に入れますか?"
         alert.informativeText = "\(node.path)\n\(Self.format(node.size))"
@@ -217,6 +255,12 @@ final class StorageModel: ObservableObject {
             failure.runModal()
             return
         }
+        removeFromTree(node)
+        invalidateCache()
+    }
+
+    private func removeFromTree(_ node: Node) {
+        guard let parent = node.parent, parent.children.contains(where: { $0 === node }) else { return }
         lock.withLock {
             parent.children.removeAll { $0 === node }
             var ancestor: Node? = parent
@@ -226,6 +270,16 @@ final class StorageModel: ObservableObject {
         if focused?.node.ancestors.contains(where: { $0 === node }) == true { focused = nil }
         hovered = nil
         revision += 1
+    }
+
+    private func invalidateCache() {
+        // A deletion invalidates the saved result; the next explicit scan replaces it.
+        if let root {
+            let treeLock = lock
+            Task.detached(priority: .utility) {
+                treeLock.withLock { try? FileManager.default.removeItem(at: TreeCache.file(for: root.path)) }
+            }
+        }
     }
 
     func cancel() {
@@ -348,7 +402,8 @@ struct ContentView: View {
     }
 
     private var errorSuffix: String {
-        model.progress.errors > 0 ? "  (読めない項目: \(model.progress.errors))" : ""
+        let errors = model.progress.errors > 0 ? "  (読めない項目: \(model.progress.errors))" : ""
+        return errors + (model.liveUpdateWarning.map { "  \($0)" } ?? "")
     }
 
     private var freeSpaceText: String {

@@ -26,8 +26,9 @@ struct StorageApp: App {
                     FullDiskAccessView(model: model)
                 }
             }
+            .task { await model.refreshAccess() }
             .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
-                model.refreshAccess()
+                Task { await model.refreshAccess() }
             }
         }
         .defaultSize(width: 1100, height: 720)
@@ -54,19 +55,31 @@ final class StorageModel: ObservableObject {
     let lock = NSLock()
     private var scanner: Scanner?
     private var task: Task<Void, Never>?
-    @Published private(set) var hasFullDiskAccess: Bool
-    private let accessCheck: () -> Bool
+    @Published private(set) var hasFullDiskAccess = false
+    @Published private(set) var isCheckingAccess = false
+    var canScan: Bool { hasFullDiskAccess && !isCheckingAccess && !isScanning }
+    private let accessCheck: @Sendable () -> Bool
+    private var accessTask: Task<Bool, Never>?
 
-    init(accessCheck: @escaping () -> Bool = FullDiskAccess.isGranted) {
+    init(accessCheck: @escaping @Sendable () -> Bool = { FullDiskAccess.isGranted() }) {
         self.accessCheck = accessCheck
-        hasFullDiskAccess = accessCheck()
     }
 
     @discardableResult
-    func refreshAccess() -> Bool {
-        hasFullDiskAccess = accessCheck()
-        if !hasFullDiskAccess { cancel() }
-        return hasFullDiskAccess
+    func refreshAccess() async -> Bool {
+        if accessTask == nil {
+            isCheckingAccess = true
+            let check = accessCheck
+            accessTask = Task {
+                let granted = await Task.detached(priority: .userInitiated) { check() }.value
+                hasFullDiskAccess = granted
+                if !granted { cancel() }
+                isCheckingAccess = false
+                accessTask = nil
+                return granted
+            }
+        }
+        return await accessTask!.value
     }
 
     static func format(_ bytes: Int64) -> String {
@@ -93,7 +106,7 @@ final class StorageModel: ObservableObject {
 
     /// Shows the last completed scan of this volume right away (when one is saved), then rescans behind it.
     func open(_ url: URL) {
-        guard !isScanning, refreshAccess() else { return }
+        guard canScan else { return }
         UserDefaults.standard.set(url.path, forKey: "lastVolume")
         if let cached = TreeCache.load(path: url.path) {
             scan(url, showing: cached.root, date: cached.date)
@@ -103,7 +116,7 @@ final class StorageModel: ObservableObject {
     }
 
     func scan(_ url: URL, showing cached: Node? = nil, date: Date? = nil) {
-        guard !isScanning, refreshAccess() else { return }
+        guard canScan else { return }
         let scanner = Scanner(url: url, lock: lock)
         self.scanner = scanner
         scanState = .scanning
@@ -167,7 +180,7 @@ final class StorageModel: ObservableObject {
 
     /// Moves to the Trash (recoverable) after confirmation, then drops the node from the tree.
     private func trash(_ node: Node) {
-        guard !isScanning, refreshAccess(), let parent = node.parent else { return }
+        guard canScan, let parent = node.parent else { return }
         let alert = NSAlert()
         alert.messageText = "「\(node.name)」をゴミ箱に入れますか?"
         alert.informativeText = "\(node.path)\n\(Self.format(node.size))"
@@ -215,10 +228,10 @@ struct ContentView: View {
                         }
                     }
                 }
-                .fixedSize().disabled(model.isScanning)
+                .fixedSize().disabled(!model.canScan)
                 if let root = model.root {
                     Button("再スキャン") { model.scan(root.url) }
-                        .disabled(model.isScanning)
+                        .disabled(!model.canScan)
                 }
                 if model.isScanning {
                     Button(model.scanState == .stopping ? "中止中…" : "中止") { model.cancel() }
@@ -234,7 +247,7 @@ struct ContentView: View {
             .onTapGesture { model.focused = nil }
             Group {
                 if let current = model.current {
-                    TreemapView(root: current, lock: model.lock, revision: model.revision, state: model.depth, focused: model.focused?.node, hovered: $model.hovered, canDelete: !model.isScanning) { placed in
+                    TreemapView(root: current, lock: model.lock, revision: model.revision, state: model.depth, focused: model.focused?.node, hovered: $model.hovered, canDelete: model.canScan) { placed in
                         model.focused = placed
                         if let placed { model.depth.toggle(placed) }
                     } onMenu: { action, item in
@@ -268,6 +281,7 @@ struct ContentView: View {
         .padding(Spacing.edge)
         .frame(minWidth: 640, minHeight: 400)
         .task {
+            guard await model.refreshAccess() else { return }
             if let last = UserDefaults.standard.string(forKey: "lastVolume") {
                 model.open(URL(fileURLWithPath: last))
             }

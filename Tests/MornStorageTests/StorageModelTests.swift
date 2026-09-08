@@ -1,4 +1,5 @@
 import XCTest
+import os
 @testable import MornStorage
 
 final class StorageModelTests: XCTestCase {
@@ -17,6 +18,7 @@ final class StorageModelTests: XCTestCase {
             try? FileManager.default.removeItem(at: cacheFile)
         }
         let model = StorageModel(accessCheck: { true })
+        await model.refreshAccess()
         model.cancel()
         XCTAssertEqual(model.scanState, .idle)
         let date = Date(timeIntervalSince1970: 1)
@@ -61,9 +63,10 @@ final class StorageModelTests: XCTestCase {
 
     @MainActor
     func testPermissionIsRequiredBeforeOpeningAndRevocationStopsScanning() async throws {
-        var granted = false
-        let model = StorageModel(accessCheck: { granted })
+        let granted = OSAllocatedUnfairLock(initialState: false)
+        let model = StorageModel(accessCheck: { granted.withLock { $0 } })
         let path = FileManager.default.temporaryDirectory.appendingPathComponent("Missing-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: TreeCache.file(for: path.path)) }
         let lastVolume = UserDefaults.standard.string(forKey: "lastVolume")
         XCTAssertFalse(model.hasFullDiskAccess)
         model.open(path)
@@ -71,18 +74,64 @@ final class StorageModelTests: XCTestCase {
         XCTAssertNil(model.root)
         XCTAssertEqual(model.scanState, .idle)
         XCTAssertEqual(UserDefaults.standard.string(forKey: "lastVolume"), lastVolume)
-        granted = true
-        XCTAssertTrue(model.refreshAccess())
+        granted.withLock { $0 = true }
+        let allowed = await model.refreshAccess()
+        XCTAssertTrue(allowed)
         model.scan(path)
         XCTAssertNotNil(model.root)
         XCTAssertEqual(model.scanState, .scanning)
-        granted = false
-        XCTAssertFalse(model.refreshAccess())
-        XCTAssertEqual(model.scanState, .stopping)
+        granted.withLock { $0 = false }
+        let revoked = await model.refreshAccess()
+        XCTAssertFalse(revoked)
+        XCTAssertNotEqual(model.scanState, .scanning, "Revocation must cancel a scan that is still running")
         for _ in 0..<200 where model.isScanning { try await Task.sleep(for: .milliseconds(10)) }
-        XCTAssertEqual(model.scanState, .stopped)
+        XCTAssertFalse(model.isScanning)
+        let settled = model.scanState
         model.scan(path)
-        XCTAssertEqual(model.scanState, .stopped)
-        XCTAssertNil(TreeCache.load(path: path.path))
+        XCTAssertEqual(model.scanState, settled)
+        // A tiny scan can finish while the asynchronous permission check is in flight.
+        if settled == .finished {
+            for _ in 0..<200 where TreeCache.load(path: path.path) == nil {
+                try await Task.sleep(for: .milliseconds(10))
+            }
+            XCTAssertNotNil(TreeCache.load(path: path.path))
+        } else {
+            XCTAssertNil(TreeCache.load(path: path.path))
+        }
+    }
+
+    @MainActor
+    func testSlowPermissionCheckLeavesMainThreadFreeAndIsShared() async {
+        let started = expectation(description: "permission check started")
+        let release = DispatchSemaphore(value: 0)
+        let calls = OSAllocatedUnfairLock(initialState: 0)
+        let model = StorageModel(accessCheck: {
+            XCTAssertFalse(Thread.isMainThread, "OS permission checks must not block the UI")
+            calls.withLock { $0 += 1 }
+            started.fulfill()
+            _ = release.wait(timeout: .now() + 2)
+            return true
+        })
+        XCTAssertEqual(calls.withLock { $0 }, 0, "Creating the model must not perform disk I/O")
+        let first = Task { await model.refreshAccess() }
+        await fulfillment(of: [started], timeout: 1)
+        XCTAssertTrue(model.isCheckingAccess)
+        XCTAssertFalse(model.hasFullDiskAccess)
+        XCTAssertFalse(model.canScan)
+        let duplicateStarted = expectation(description: "duplicate check requested")
+        let second = Task {
+            duplicateStarted.fulfill()
+            return await model.refreshAccess()
+        }
+        await fulfillment(of: [duplicateStarted], timeout: 1)
+        XCTAssertEqual(calls.withLock { $0 }, 1)
+        release.signal()
+        let firstResult = await first.value
+        let secondResult = await second.value
+        XCTAssertTrue(firstResult && secondResult)
+        XCTAssertEqual(calls.withLock { $0 }, 1)
+        XCTAssertTrue(model.hasFullDiskAccess)
+        XCTAssertFalse(model.isCheckingAccess)
+        XCTAssertTrue(model.canScan)
     }
 }

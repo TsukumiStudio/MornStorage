@@ -43,7 +43,10 @@ struct FullDiskAccessView: View {
                     .foregroundStyle(.secondary)
             }
             HStack(spacing: Spacing.gap) {
-                Button("許可を確認") { checked = !model.refreshAccess() }
+                Button(model.isCheckingAccess ? "確認中…" : "許可を確認") {
+                    Task { checked = !(await model.refreshAccess()) }
+                }
+                .disabled(model.isCheckingAccess)
                 Button("終了") { NSApp.terminate(nil) }
             }
         }

@@ -144,7 +144,8 @@ struct TreemapView: View {
         // Directories get a label only when place() reserved header space, so child labels never overlap it.
         let labelFits = item.node.isDirectory ? item.rect.height - Self.padding * 2 > Self.header * 2 : rect.height >= Self.header
         guard labelFits, rect.width >= Self.header * 2 else { return }
-        let label = Text(item.node.name).font(.system(size: 10, weight: item.node.isDirectory ? .semibold : .regular))
+        let title = item.node.isDirectory ? "\(item.node.name) (\(StorageModel.format(lock.withLock { item.node.size })))" : item.node.name
+        let label = Text(title).font(.system(size: 10, weight: item.node.isDirectory ? .semibold : .regular))
             .foregroundStyle(item.node.isDirectory ? Color.white.opacity(0.85) : Color.black.opacity(0.75))
         let text = context.resolve(label)
         let measured = text.measure(in: CGSize(width: rect.width - Self.padding * 2, height: Self.header))

@@ -232,10 +232,7 @@ struct ContentView: View {
         .padding(Spacing.edge)
         .frame(minWidth: 640, minHeight: 400)
         .task {
-            // A path argument would make AppKit treat launch as "open file" and skip the window, so use an env var.
-            if let path = ProcessInfo.processInfo.environment["MORNSTORAGE_PATH"] {
-                model.scan(URL(fileURLWithPath: path))
-            } else if let last = UserDefaults.standard.string(forKey: "lastVolume") {
+            if let last = UserDefaults.standard.string(forKey: "lastVolume") {
                 model.open(URL(fileURLWithPath: last))
             }
         }

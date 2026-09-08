@@ -3,6 +3,13 @@ import XCTest
 
 @MainActor
 final class UpdaterTests: XCTestCase {
+    func testRestartReportsLaunchFailure() async {
+        do {
+            try await AppDelegate.restart(at: URL(fileURLWithPath: "/missing-MornStorage-\(UUID()).app"))
+            XCTFail("起動に失敗したら、現在のアプリを終了せずエラーを返す")
+        } catch { }
+    }
+
     func testVersionAndProcessFailures() async throws {
         XCTAssertTrue(Updater.isNewer(latestTag: "v0.10.0", current: "0.9.9"))
         XCTAssertFalse(Updater.isNewer(latestTag: "v0.3", current: "0.3.0"))

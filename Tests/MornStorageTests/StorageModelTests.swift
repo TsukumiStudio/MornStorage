@@ -4,6 +4,37 @@ import os
 
 final class StorageModelTests: XCTestCase {
     @MainActor
+    func testSelectingVolumeWaitsForExplicitStart() async throws {
+        let base = FileManager.default.temporaryDirectory.appendingPathComponent("MornStorageSelect-\(UUID())")
+        try FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
+        defer {
+            try? FileManager.default.removeItem(at: base)
+            try? FileManager.default.removeItem(at: TreeCache.file(for: base.path))
+        }
+        let model = StorageModel(accessCheck: { true })
+        await model.refreshAccess()
+        model.startScan()
+        XCTAssertNil(model.root)
+        model.selectVolume(base)
+        await model.refreshAccess()
+        XCTAssertEqual(model.selectedVolume, base)
+        XCTAssertEqual(model.scanState, .idle)
+        XCTAssertNil(model.root, "Selecting a volume or rechecking access must not start scanning")
+        XCTAssertNil(TreeCache.load(path: base.path))
+        model.startScan()
+        XCTAssertEqual(model.scanState, .scanning)
+        model.selectVolume(base.appendingPathComponent("other"))
+        XCTAssertEqual(model.selectedVolume, base, "The target cannot change during a scan")
+        for _ in 0..<200 where model.isScanning { try await Task.sleep(for: .milliseconds(10)) }
+        XCTAssertEqual(model.scanState, .finished)
+        for _ in 0..<200 where TreeCache.load(path: base.path) == nil { try await Task.sleep(for: .milliseconds(10)) }
+        XCTAssertNotNil(TreeCache.load(path: base.path))
+        model.selectVolume(base)
+        XCTAssertEqual(model.scanState, .idle)
+        XCTAssertNil(model.root, "Reselecting a cached volume must not rescan")
+    }
+
+    @MainActor
     func testScanRejectsReentryAndWaitsForCancellationBeforeRestart() async throws {
         let base = FileManager.default.temporaryDirectory.appendingPathComponent("MornStorageState-\(UUID())")
         try FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
@@ -26,9 +57,9 @@ final class StorageModelTests: XCTestCase {
         XCTAssertEqual(model.scanState, .scanning)
         model.scan(base)
         XCTAssertTrue(model.root === cached, "A repeated scan must not replace the active tree")
-        let lastVolume = UserDefaults.standard.string(forKey: "lastVolume")
-        model.open(base.appendingPathComponent("other"))
-        XCTAssertEqual(UserDefaults.standard.string(forKey: "lastVolume"), lastVolume)
+        let selectedVolume = model.selectedVolume
+        model.selectVolume(base.appendingPathComponent("other"))
+        XCTAssertEqual(model.selectedVolume, selectedVolume)
         XCTAssertTrue(model.root === cached)
         model.cancel()
         model.cancel()
@@ -67,13 +98,13 @@ final class StorageModelTests: XCTestCase {
         let model = StorageModel(accessCheck: { granted.withLock { $0 } })
         let path = FileManager.default.temporaryDirectory.appendingPathComponent("Missing-\(UUID())")
         defer { try? FileManager.default.removeItem(at: TreeCache.file(for: path.path)) }
-        let lastVolume = UserDefaults.standard.string(forKey: "lastVolume")
+        let selectedVolume = model.selectedVolume
         XCTAssertFalse(model.hasFullDiskAccess)
-        model.open(path)
+        model.selectVolume(path)
         model.scan(path)
         XCTAssertNil(model.root)
         XCTAssertEqual(model.scanState, .idle)
-        XCTAssertEqual(UserDefaults.standard.string(forKey: "lastVolume"), lastVolume)
+        XCTAssertEqual(model.selectedVolume, selectedVolume)
         granted.withLock { $0 = true }
         let allowed = await model.refreshAccess()
         XCTAssertTrue(allowed)

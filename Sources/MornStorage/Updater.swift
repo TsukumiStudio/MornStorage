@@ -112,10 +112,9 @@ final class Updater: ObservableObject {
 
     func restart() {
         guard case .updated = state else { return }
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/bin/sh")
-        process.arguments = ["-c", "sleep 1; /usr/bin/open /Applications/MornStorage.app"]
-        do { try process.run(); NSApp.terminate(nil) }
-        catch { state = .failed("手動でアプリを再起動してください。") }
+        Task {
+            do { try await AppDelegate.restart(at: URL(fileURLWithPath: Self.appPath)) }
+            catch { state = .failed("手動でアプリを再起動してください。") }
+        }
     }
 }

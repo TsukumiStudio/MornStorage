@@ -1,5 +1,6 @@
 import SwiftUI
 import Darwin
+import OSLog
 
 enum FullDiskAccess {
     static func isGranted() -> Bool {
@@ -11,8 +12,15 @@ enum FullDiskAccess {
         ]
         return paths.contains { path in
             let fd = Darwin.open(path, O_RDONLY | O_CLOEXEC)
-            guard fd >= 0 else { return false }
+            guard fd >= 0 else {
+                let code = errno
+                Logger(subsystem: "studio.tsukumi.MornStorage", category: "FullDiskAccess")
+                    .error("Permission probe failed: errno=\(code)")
+                return false
+            }
             Darwin.close(fd)
+            Logger(subsystem: "studio.tsukumi.MornStorage", category: "FullDiskAccess")
+                .info("Permission probe succeeded")
             return true
         }
     }
@@ -21,6 +29,8 @@ enum FullDiskAccess {
 struct FullDiskAccessView: View {
     @ObservedObject var model: StorageModel
     @State private var checked = false
+    @State private var restarting = false
+    @State private var restartError: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: Spacing.section) {
@@ -39,7 +49,7 @@ struct FullDiskAccessView: View {
                 }
             }
             if checked {
-                Text("アクセスを確認できませんでした。許可後も進めない場合は、MornStorageを終了して開き直してください。")
+                Text("許可済みでも、反映には再起動が必要な場合があります。「再起動して確認」を押してください。")
                     .foregroundStyle(.secondary)
             }
             HStack(spacing: Spacing.gap) {
@@ -47,7 +57,21 @@ struct FullDiskAccessView: View {
                     Task { checked = !(await model.refreshAccess()) }
                 }
                 .disabled(model.isCheckingAccess)
+                Button(restarting ? "再起動中…" : "再起動して確認") {
+                    restarting = true
+                    Task {
+                        do { try await AppDelegate.restart(at: Bundle.main.bundleURL) }
+                        catch {
+                            restartError = "再起動できませんでした。MornStorageを終了し、Finderから開き直してください。"
+                            restarting = false
+                        }
+                    }
+                }
+                .disabled(restarting)
                 Button("終了") { NSApp.terminate(nil) }
+            }
+            if let restartError {
+                Text(restartError).foregroundStyle(.secondary)
             }
         }
         .padding(Spacing.edge * 2)

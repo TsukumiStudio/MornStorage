@@ -9,6 +9,14 @@ enum Spacing {
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
+
+    @MainActor
+    static func restart(at url: URL) async throws {
+        let configuration = NSWorkspace.OpenConfiguration()
+        configuration.createsNewApplicationInstance = true
+        _ = try await NSWorkspace.shared.openApplication(at: url, configuration: configuration)
+        NSApp.terminate(nil)
+    }
 }
 
 @main
@@ -56,6 +64,7 @@ final class StorageModel: ObservableObject {
     private var scanner: Scanner?
     private var task: Task<Void, Never>?
     @Published private(set) var hasFullDiskAccess = false
+    @Published private(set) var selectedVolume: URL?
     @Published private(set) var isCheckingAccess = false
     var canScan: Bool { hasFullDiskAccess && !isCheckingAccess && !isScanning }
     private let accessCheck: @Sendable () -> Bool
@@ -104,10 +113,21 @@ final class StorageModel: ObservableObject {
         }
     }
 
-    /// Shows the last completed scan of this volume right away (when one is saved), then rescans behind it.
-    func open(_ url: URL) {
+    func selectVolume(_ url: URL) {
         guard canScan else { return }
-        UserDefaults.standard.set(url.path, forKey: "lastVolume")
+        selectedVolume = url
+        root = nil
+        current = nil
+        cachedDate = nil
+        expectedBytes = nil
+        hovered = nil
+        focused = nil
+        progress = ScanProgress()
+        scanState = .idle
+    }
+
+    func startScan() {
+        guard canScan, let url = selectedVolume else { return }
         if let cached = TreeCache.load(path: url.path) {
             scan(url, showing: cached.root, date: cached.date)
         } else {
@@ -221,18 +241,16 @@ struct ContentView: View {
     var body: some View {
         VStack(spacing: Spacing.gap) {
             HStack(spacing: Spacing.gap) {
-                Menu("ボリュームを選択") {
+                Menu(model.selectedVolume.map { $0.path == "/" ? "/" : $0.lastPathComponent } ?? "ボリュームを選択") {
                     ForEach(StorageModel.volumes()) { volume in
                         Button("\(volume.name)  (\(StorageModel.format(volume.total - volume.available)) / \(StorageModel.format(volume.total)))") {
-                            model.open(volume.url)
+                            model.selectVolume(volume.url)
                         }
                     }
                 }
                 .fixedSize().disabled(!model.canScan)
-                if let root = model.root {
-                    Button("再スキャン") { model.scan(root.url) }
-                        .disabled(!model.canScan)
-                }
+                Button("スキャン開始") { model.startScan() }
+                    .disabled(!model.canScan || model.selectedVolume == nil)
                 if model.isScanning {
                     Button(model.scanState == .stopping ? "中止中…" : "中止") { model.cancel() }
                         .tint(.red).disabled(model.scanState == .stopping)
@@ -254,7 +272,7 @@ struct ContentView: View {
                         model.menu(action, item)
                     }
                 } else {
-                    Text("ボリュームを選択してスキャンを開始します")
+                    Text("ボリュームを選択し、「スキャン開始」を押してください")
                         .foregroundStyle(.secondary)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
@@ -280,12 +298,6 @@ struct ContentView: View {
         }
         .padding(Spacing.edge)
         .frame(minWidth: 640, minHeight: 400)
-        .task {
-            guard await model.refreshAccess() else { return }
-            if let last = UserDefaults.standard.string(forKey: "lastVolume") {
-                model.open(URL(fileURLWithPath: last))
-            }
-        }
     }
 
     private var depthControls: some View {

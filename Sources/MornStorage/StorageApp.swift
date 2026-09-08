@@ -19,7 +19,16 @@ struct StorageApp: App {
 
     var body: some Scene {
         WindowGroup("MornStorage") {
-            ContentView(model: model, updater: updater)
+            Group {
+                if model.hasFullDiskAccess {
+                    ContentView(model: model, updater: updater)
+                } else {
+                    FullDiskAccessView(model: model)
+                }
+            }
+            .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+                model.refreshAccess()
+            }
         }
         .defaultSize(width: 1100, height: 720)
     }
@@ -30,7 +39,9 @@ final class StorageModel: ObservableObject {
     @Published private(set) var root: Node?
     @Published var current: Node?
     @Published private(set) var progress = ScanProgress()
-    @Published private(set) var isScanning = false
+    enum ScanState { case idle, scanning, stopping, stopped, finished }
+    @Published private(set) var scanState: ScanState = .idle
+    var isScanning: Bool { scanState == .scanning || scanState == .stopping }
     /// Used bytes of the scanned volume; nil when the target is not a volume root.
     @Published private(set) var expectedBytes: Int64?
     /// Set while a previous scan's tree is on screen and a fresh scan runs behind it.
@@ -43,6 +54,20 @@ final class StorageModel: ObservableObject {
     let lock = NSLock()
     private var scanner: Scanner?
     private var task: Task<Void, Never>?
+    @Published private(set) var hasFullDiskAccess: Bool
+    private let accessCheck: () -> Bool
+
+    init(accessCheck: @escaping () -> Bool = FullDiskAccess.isGranted) {
+        self.accessCheck = accessCheck
+        hasFullDiskAccess = accessCheck()
+    }
+
+    @discardableResult
+    func refreshAccess() -> Bool {
+        hasFullDiskAccess = accessCheck()
+        if !hasFullDiskAccess { cancel() }
+        return hasFullDiskAccess
+    }
 
     static func format(_ bytes: Int64) -> String {
         ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
@@ -68,6 +93,7 @@ final class StorageModel: ObservableObject {
 
     /// Shows the last completed scan of this volume right away (when one is saved), then rescans behind it.
     func open(_ url: URL) {
+        guard !isScanning, refreshAccess() else { return }
         UserDefaults.standard.set(url.path, forKey: "lastVolume")
         if let cached = TreeCache.load(path: url.path) {
             scan(url, showing: cached.root, date: cached.date)
@@ -77,10 +103,10 @@ final class StorageModel: ObservableObject {
     }
 
     func scan(_ url: URL, showing cached: Node? = nil, date: Date? = nil) {
-        cancel()
+        guard !isScanning, refreshAccess() else { return }
         let scanner = Scanner(url: url, lock: lock)
         self.scanner = scanner
-        isScanning = true
+        scanState = .scanning
         root = cached ?? scanner.root
         current = root
         cachedDate = date
@@ -100,10 +126,16 @@ final class StorageModel: ObservableObject {
             }
             await Task.detached(priority: .userInitiated) { scanner.run() }.value
             poll.cancel()
+            guard self.scanner === scanner else { return }
             progress = scanner.snapshot()
             revision += 1
-            guard self.scanner === scanner else { return }
-            isScanning = false
+            self.scanner = nil
+            task = nil
+            guard !Task.isCancelled else {
+                scanState = .stopped
+                return
+            }
+            scanState = .finished
             if cached != nil {
                 root = scanner.root
                 current = scanner.root
@@ -135,7 +167,7 @@ final class StorageModel: ObservableObject {
 
     /// Moves to the Trash (recoverable) after confirmation, then drops the node from the tree.
     private func trash(_ node: Node) {
-        guard !isScanning, let parent = node.parent else { return }
+        guard !isScanning, refreshAccess(), let parent = node.parent else { return }
         let alert = NSAlert()
         alert.messageText = "「\(node.name)」をゴミ箱に入れますか?"
         alert.informativeText = "\(node.path)\n\(Self.format(node.size))"
@@ -162,10 +194,10 @@ final class StorageModel: ObservableObject {
     }
 
     func cancel() {
+        guard scanState == .scanning else { return }
+        scanState = .stopping
         scanner?.cancel()
         task?.cancel()
-        scanner = nil
-        isScanning = false
     }
 }
 
@@ -186,9 +218,11 @@ struct ContentView: View {
                 .fixedSize().disabled(model.isScanning)
                 if let root = model.root {
                     Button("再スキャン") { model.scan(root.url) }
+                        .disabled(model.isScanning)
                 }
                 if model.isScanning {
-                    Button("中止") { model.cancel() }.tint(.red)
+                    Button(model.scanState == .stopping ? "中止中…" : "中止") { model.cancel() }
+                        .tint(.red).disabled(model.scanState == .stopping)
                 }
                 Divider().frame(height: Spacing.section)
                 breadcrumb
@@ -213,7 +247,9 @@ struct ContentView: View {
                 }
             }
             .overlay(alignment: .center) {
-                if model.isScanning, model.root?.size == 0 { Text("スキャン中…").foregroundStyle(.secondary) }
+                if model.isScanning, model.root?.size == 0 {
+                    Text(model.scanState == .stopping ? "中止中…" : "スキャン中…").foregroundStyle(.secondary)
+                }
             }
             .background(Color(white: 0.09))
             .clipShape(RoundedRectangle(cornerRadius: 8))
@@ -272,13 +308,15 @@ struct ContentView: View {
     }
 
     private var statusText: String {
+        if model.scanState == .stopping { return "中止中…" }
         if model.isScanning {
             let percent = scanFraction.map { "\(Int($0 * 100))%  " } ?? ""
             let cached = model.cachedDate.map { "前回 (\($0.formatted(date: .numeric, time: .shortened))) の結果を表示中 · " } ?? ""
             return "\(cached)スキャン中 \(percent)\(model.progress.files) ファイル / \(StorageModel.format(model.progress.bytes))" + errorSuffix
         }
         guard let node = model.hovered ?? model.current else { return "" }
-        return "\(node.path)  —  \(StorageModel.format(node.size))" + errorSuffix
+        let stopped = model.scanState == .stopped ? (model.cachedDate == nil ? "スキャン中止 · " : "スキャン中止・前回の結果を表示中 · ") : ""
+        return stopped + "\(node.path)  —  \(StorageModel.format(node.size))" + errorSuffix
     }
 
     private var errorSuffix: String {

@@ -76,6 +76,7 @@ final class Scanner: @unchecked Sendable {
         let buffer = UnsafeMutableRawPointer.allocate(byteCount: 256 * 1024, alignment: 8)
         defer { buffer.deallocate() }
         while true {
+            if isCancelled { return }
             let count = getattrlistbulk(fd, &request, buffer, 256 * 1024, 0)
             if count < 0 { lock.withLock { progress.errors += 1 }; break }
             if count == 0 { break }
@@ -120,6 +121,7 @@ final class Scanner: @unchecked Sendable {
             }
         }
         lock.withLock {
+            guard !cancelled else { return }
             directory.children.append(contentsOf: files)
             directory.children.append(contentsOf: directories)
             var node: Node? = directory
@@ -128,6 +130,7 @@ final class Scanner: @unchecked Sendable {
             progress.bytes += bytes
         }
         for child in directories {
+            if isCancelled { return }
             group.enter()
             queue.async { self.walk(child); self.group.leave() }
         }

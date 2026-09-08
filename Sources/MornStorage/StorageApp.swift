@@ -344,8 +344,15 @@ struct ContentView: View {
         case .updated:
             Button("再起動して適用") { updater.restart() }
         case .failed(let message):
-            Button("確認失敗・再試行") { Task { await updater.check() } }
-                .foregroundStyle(.red).help(message).accessibilityHint(message)
+            Button("更新エラーの詳細") {
+                let alert = NSAlert()
+                alert.messageText = "更新できませんでした"
+                alert.informativeText = message
+                alert.alertStyle = .warning
+                alert.runModal()
+            }
+            .foregroundStyle(.red)
+            Button("再確認") { Task { await updater.check() } }
         }
     }
 }

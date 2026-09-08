@@ -20,4 +20,25 @@ final class UpdaterTests: XCTestCase {
             XCTFail("起動できないコマンドを成功扱いしてはいけません")
         } catch { }
     }
+
+    func testCommandFailureIncludesStderrAndLargeOutputDoesNotBlock() async throws {
+        let log = FileManager.default.temporaryDirectory.appendingPathComponent("MornStorage-update-test-\(UUID()).log")
+        let script = log.appendingPathExtension("sh")
+        try "head -c 131072 /dev/zero; echo 'permission denied test' >&2; exit 7".write(to: script, atomically: true, encoding: .utf8)
+        defer {
+            try? FileManager.default.removeItem(at: log)
+            try? FileManager.default.removeItem(at: script)
+        }
+        do {
+            try await Updater.run("/bin/sh", [script.path], logURL: log)
+            XCTFail("失敗したコマンドを成功扱いしてはいけません")
+        } catch {
+            XCTAssertEqual((error as NSError).code, 7)
+            XCTAssertTrue(error.localizedDescription.contains("permission denied test"))
+            XCTAssertLessThan(error.localizedDescription.count, 5000)
+        }
+        let output = try Data(contentsOf: log)
+        XCTAssertGreaterThan(output.count, 131072)
+        XCTAssertTrue(String(decoding: output.suffix(100), as: UTF8.self).contains("permission denied test"))
+    }
 }

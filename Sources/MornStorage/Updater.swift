@@ -53,16 +53,16 @@ final class Updater: ObservableObject {
 
     func update() async {
         guard case .available(let target) = state else { return }
-        guard Bundle.main.bundlePath == Self.appPath,
-              let brew = ["/opt/homebrew/bin/brew", "/usr/local/bin/brew"].first(where: { FileManager.default.isExecutableFile(atPath: $0) }) else {
-            state = .failed("Homebrew版を /Applications にインストールしてください。")
+        guard let brew = ["/opt/homebrew/bin/brew", "/usr/local/bin/brew"].first(where: { FileManager.default.isExecutableFile(atPath: $0) }) else {
+            state = .failed("Homebrewが見つかりません。")
             return
         }
         state = .updating
+        let logURL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Logs/MornStorage/update.log")
         do {
-            try await Self.run(brew, ["list", "--cask", Self.cask])
-            try await Self.run(brew, ["update"])
-            try await Self.run(brew, ["upgrade", "--cask", Self.cask])
+            try await Self.run(brew, ["list", "--cask", Self.cask], logURL: logURL)
+            try await Self.run(brew, ["update"], logURL: logURL)
+            try await Self.run(brew, ["upgrade", "--cask", Self.cask], logURL: logURL)
             let plist = URL(fileURLWithPath: Self.appPath).appendingPathComponent("Contents/Info.plist")
             let data = try Data(contentsOf: plist)
             let info = try PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any]
@@ -73,26 +73,40 @@ final class Updater: ObservableObject {
                 return
             }
             state = .updated
-        } catch { state = .failed("更新に失敗しました。Homebrewの状態を確認してください。") }
+        } catch { state = .failed("\(error.localizedDescription)\n\nログ: \(logURL.path)") }
     }
 
-    // Output goes to /dev/null: no pipe buffer can block a long brew update.
-    static func run(_ executable: String, _ arguments: [String]) async throws {
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+    // A file captures diagnostics without a pipe buffer that can block Homebrew.
+    static func run(_ executable: String, _ arguments: [String], logURL: URL? = nil) async throws {
+        let outputURL = logURL ?? FileManager.default.temporaryDirectory.appendingPathComponent("MornStorage-update-\(UUID()).log")
+        try FileManager.default.createDirectory(at: outputURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data().write(to: outputURL, options: .atomic)
+        let output = try FileHandle(forUpdating: outputURL)
+        defer {
+            try? output.close()
+            if logURL == nil { try? FileManager.default.removeItem(at: outputURL) }
+        }
+        let status = try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Int32, Error>) in
             let process = Process()
             process.executableURL = URL(fileURLWithPath: executable)
             process.arguments = arguments
             process.standardInput = FileHandle.nullDevice
-            process.standardOutput = FileHandle.nullDevice
-            process.standardError = FileHandle.nullDevice
+            process.standardOutput = output
+            process.standardError = output
             var environment = ProcessInfo.processInfo.environment
             environment["PATH"] = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
             process.environment = environment
             process.terminationHandler = { task in
-                if task.terminationStatus == 0 { continuation.resume() }
-                else { continuation.resume(throwing: NSError(domain: "Homebrew", code: Int(task.terminationStatus))) }
+                continuation.resume(returning: task.terminationStatus)
             }
             do { try process.run() } catch { continuation.resume(throwing: error) }
+        }
+        guard status == 0 else {
+            let end = try output.seekToEnd()
+            try output.seek(toOffset: end > 4096 ? end - 4096 : 0)
+            let detail = String(decoding: try output.readToEnd() ?? Data(), as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+            let command = ([URL(fileURLWithPath: executable).lastPathComponent] + arguments).joined(separator: " ")
+            throw NSError(domain: "Homebrew", code: Int(status), userInfo: [NSLocalizedDescriptionKey: "\(command) が失敗しました（終了コード \(status)）。\n\(detail)"])
         }
     }
 

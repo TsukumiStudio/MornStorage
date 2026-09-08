@@ -65,6 +65,7 @@ final class StorageModel: ObservableObject {
     private var task: Task<Void, Never>?
     @Published private(set) var hasFullDiskAccess = false
     @Published private(set) var selectedVolume: URL?
+    @Published private(set) var selectedVolumeName = "ボリュームを選択"
     @Published private(set) var isCheckingAccess = false
     var canScan: Bool { hasFullDiskAccess && !isCheckingAccess && !isScanning }
     private let accessCheck: @Sendable () -> Bool
@@ -113,9 +114,10 @@ final class StorageModel: ObservableObject {
         }
     }
 
-    func selectVolume(_ url: URL) {
+    func selectVolume(_ url: URL, name: String) {
         guard canScan else { return }
         selectedVolume = url
+        selectedVolumeName = name
         root = nil
         current = nil
         cachedDate = nil
@@ -241,10 +243,10 @@ struct ContentView: View {
     var body: some View {
         VStack(spacing: Spacing.gap) {
             HStack(spacing: Spacing.gap) {
-                Menu(model.selectedVolume.map { $0.path == "/" ? "/" : $0.lastPathComponent } ?? "ボリュームを選択") {
+                Menu(model.selectedVolumeName) {
                     ForEach(StorageModel.volumes()) { volume in
                         Button("\(volume.name)  (\(StorageModel.format(volume.total - volume.available)) / \(StorageModel.format(volume.total)))") {
-                            model.selectVolume(volume.url)
+                            model.selectVolume(volume.url, name: volume.name)
                         }
                     }
                 }

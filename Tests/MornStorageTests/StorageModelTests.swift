@@ -15,21 +15,22 @@ final class StorageModelTests: XCTestCase {
         await model.refreshAccess()
         model.startScan()
         XCTAssertNil(model.root)
-        model.selectVolume(base)
+        model.selectVolume(base, name: "テストストレージ")
         await model.refreshAccess()
+        XCTAssertEqual(model.selectedVolumeName, "テストストレージ")
         XCTAssertEqual(model.selectedVolume, base)
         XCTAssertEqual(model.scanState, .idle)
         XCTAssertNil(model.root, "Selecting a volume or rechecking access must not start scanning")
         XCTAssertNil(TreeCache.load(path: base.path))
         model.startScan()
         XCTAssertEqual(model.scanState, .scanning)
-        model.selectVolume(base.appendingPathComponent("other"))
+        model.selectVolume(base.appendingPathComponent("other"), name: "別のストレージ")
         XCTAssertEqual(model.selectedVolume, base, "The target cannot change during a scan")
         for _ in 0..<200 where model.isScanning { try await Task.sleep(for: .milliseconds(10)) }
         XCTAssertEqual(model.scanState, .finished)
         for _ in 0..<200 where TreeCache.load(path: base.path) == nil { try await Task.sleep(for: .milliseconds(10)) }
         XCTAssertNotNil(TreeCache.load(path: base.path))
-        model.selectVolume(base)
+        model.selectVolume(base, name: "テストストレージ")
         XCTAssertEqual(model.scanState, .idle)
         XCTAssertNil(model.root, "Reselecting a cached volume must not rescan")
     }
@@ -58,7 +59,7 @@ final class StorageModelTests: XCTestCase {
         model.scan(base)
         XCTAssertTrue(model.root === cached, "A repeated scan must not replace the active tree")
         let selectedVolume = model.selectedVolume
-        model.selectVolume(base.appendingPathComponent("other"))
+        model.selectVolume(base.appendingPathComponent("other"), name: "別のストレージ")
         XCTAssertEqual(model.selectedVolume, selectedVolume)
         XCTAssertTrue(model.root === cached)
         model.cancel()
@@ -100,7 +101,7 @@ final class StorageModelTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: TreeCache.file(for: path.path)) }
         let selectedVolume = model.selectedVolume
         XCTAssertFalse(model.hasFullDiskAccess)
-        model.selectVolume(path)
+        model.selectVolume(path, name: "未許可のストレージ")
         model.scan(path)
         XCTAssertNil(model.root)
         XCTAssertEqual(model.scanState, .idle)

@@ -8,9 +8,10 @@ fi
 swift build "${build_args[@]}"
 binary_dir=$(swift build "${build_args[@]}" --show-bin-path)
 app_path="$PWD/dist/MornStorage.app"
-mkdir -p "$app_path/Contents/MacOS"
+mkdir -p "$app_path/Contents/MacOS" "$app_path/Contents/Resources"
 cp "$binary_dir/MornStorage" "$app_path/Contents/MacOS/MornStorage"
 cp Support/Info.plist "$app_path/Contents/Info.plist"
+cp Support/AppIcon.icns "$app_path/Contents/Resources/AppIcon.icns"
 if [[ -n "${VERSION:-}" ]]; then
     [[ "$VERSION" =~ '^[0-9]+\.[0-9]+\.[0-9]+$' ]] || { print -u2 'Invalid VERSION'; exit 1; }
     /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION" "$app_path/Contents/Info.plist"

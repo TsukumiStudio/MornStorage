@@ -40,59 +40,14 @@ jobs:
 
       - name: Sign & notarize via MornNotary
         env:
+          # PAT (classic), repo scope, with access to matsufriends/MornNotary.
           GH_TOKEN: ${{ secrets.MORN_NOTARY_TOKEN }}
         run: |
           set -euo pipefail
-          SUBMIT_ZIP="$(mktemp -d)/MornStorage.zip"
-          ditto -c -k --keepParent dist/MornStorage.app "$SUBMIT_ZIP"
-
-          WORKDIR="$(mktemp -d)"
-          git clone --depth 1 --branch main --single-branch "https://x-access-token:${GH_TOKEN}@github.com/matsufriends/MornNotary.git" "$WORKDIR"
-          cd "$WORKDIR"
-          REQUEST_BRANCH="sign/mornstorage-${VERSION}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-          git switch -c "$REQUEST_BRANCH"
-          cp "$SUBMIT_ZIP" "$WORKDIR/incoming/MornStorage.zip"
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add incoming/MornStorage.zip
-          git commit -m "request: sign MornStorage v${VERSION}"
-          git push -u origin "$REQUEST_BRANCH"
-          SHA="$(git rev-parse HEAD)"
-
-          RUN_ID=""
-          for i in $(seq 1 30); do
-            RUN_ID=$(gh run list --repo matsufriends/MornNotary --workflow sign.yml \
-              --branch "$REQUEST_BRANCH" --commit "$SHA" --event push \
-              --json databaseId --jq '.[0].databaseId // empty')
-            [ -n "$RUN_ID" ] && break
-            sleep 5
-          done
-          if [ -z "$RUN_ID" ]; then
-            echo "::error::MornNotary workflow run did not start for commit $SHA"
-            exit 1
-          fi
-          echo "MornNotary run: $RUN_ID"
-          gh run watch "$RUN_ID" --repo matsufriends/MornNotary --exit-status
-
-          OUTDIR="$(mktemp -d)"
-          gh run download "$RUN_ID" --repo matsufriends/MornNotary --name "MornStorage-signed" --dir "$OUTDIR"
-          SIGNED_ZIP="$(find "$OUTDIR" -name '*.zip' | head -1)"
-          if [ -z "$SIGNED_ZIP" ]; then
-            echo "::error::Signed artifact not found in MornNotary run output"
-            exit 1
-          fi
-
-          cd "$GITHUB_WORKSPACE"
-          mv dist/MornStorage.app "$OUTDIR/unsigned.app"
-          ditto -x -k "$SIGNED_ZIP" dist
-          codesign --verify --deep --strict --verbose=2 dist/MornStorage.app
-          xcrun stapler validate dist/MornStorage.app
-          git -C "$WORKDIR" push origin --delete "$REQUEST_BRANCH"
-
-      - name: Zip app
-        run: |
-          cd dist
-          ditto -c -k --keepParent MornStorage.app MornStorage.app.zip
+          gh auth setup-git
+          gh repo clone matsufriends/MornNotary "$RUNNER_TEMP/MornNotary" -- --depth 1
+          bash "$RUNNER_TEMP/MornNotary/sign.sh" dist/MornStorage.app
+          mv dist/MornStorage-signed.zip dist/MornStorage.app.zip
 
       - name: Publish release
         if: github.event_name == 'push'
